@@ -46,6 +46,7 @@ const manageRules = [
 const operateRules = [
   /^\/api\/hosts\/[^/]+\/assistant\/plan$/,
   /^\/api\/hosts\/[^/]+\/assistant\/diagnose$/,
+  /^\/api\/hosts\/[^/]+\/assistant\/cases$/,
   /^\/api\/hosts\/[^/]+\/assistant\/remediation-plan$/,
   /^\/api\/hosts\/[^/]+\/assistant\/remediation-plans\/[^/]+\/confirm$/,
   /^\/api\/hosts\/[^/]+\/assistant\/remediation-plans\/[^/]+\/recheck$/,

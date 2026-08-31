@@ -11,7 +11,7 @@ import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
   list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
-  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), planRemediation: vi.fn(), confirmRemediation: vi.fn(), remediationPlans: vi.fn(), remediationPlan: vi.fn(), recheckRemediation: vi.fn(), health: vi.fn(), checkHealth: vi.fn(), setHealthMonitoring: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
+  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), operationCases: vi.fn(), diagnoseCase: vi.fn(), planRemediation: vi.fn(), confirmRemediation: vi.fn(), remediationPlans: vi.fn(), remediationPlan: vi.fn(), recheckRemediation: vi.fn(), health: vi.fn(), checkHealth: vi.fn(), setHealthMonitoring: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
 } }));
 
 const host: SshHost = {
@@ -59,6 +59,7 @@ beforeEach(async () => {
   vi.mocked(hostApi.transfers).mockResolvedValue({ transfers: [], count: 0 });
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
   vi.mocked(hostApi.remediationPlans).mockResolvedValue({ plans: [], count: 0 });
+  vi.mocked(hostApi.operationCases).mockResolvedValue({ cases: [], count: 0, activeCase: null });
   vi.mocked(hostApi.remediationPlan).mockResolvedValue({ plan: remediationPlan });
   vi.mocked(hostApi.health).mockResolvedValue({
     policy: { enabled: false, cadence: "daily", nextRunAt: null, lastRunAt: null, lastRunStatus: null, revision: 0 },
@@ -87,6 +88,17 @@ beforeEach(async () => {
       { action: "processes", status: "completed", summary: { version: 1, severity: "info", finding: "process_activity_ready", impact: "information_only", nextAction: "review_process_activity", facts: [] } },
     ],
   } });
+  vi.mocked(hostApi.diagnoseCase).mockImplementation(async (hostId, input, incidentId) => {
+    const response = await hostApi.diagnoseIssue(hostId, input ?? "");
+    const understanding = response.run.understanding ?? { version: 1 as const, goal: "inspect" as const, domain: "device" as const, symptom: "unspecified" as const, desiredOutcome: "understand_state" as const, requestedChange: "none" as const, handling: "read_only_diagnosis" as const, confidence: "medium" as const };
+    return { case: {
+      id: "hoc_1", sshTargetId: hostId, incidentId: incidentId ?? null, version: 1, intent: response.run.intent, understanding,
+      status: "diagnosed", nextStep: response.run.intent === "website" ? "check_managed_website" : "review_findings",
+      diagnosticRunId: response.run.id, remediationPlanId: null, targetRevision: response.run.targetRevision, deviceChanged: false, lastError: null,
+      timeline: [{ kind: "case_opened", at: response.run.createdAt, deviceChanged: false }, { kind: "diagnosis_completed", at: response.run.createdAt, deviceChanged: false, diagnosticRunId: response.run.id, severity: response.run.summary.severity }],
+      latestRun: response.run, createdAt: response.run.createdAt, updatedAt: response.run.createdAt,
+    }, run: response.run, reused: false };
+  });
 });
 afterEach(() => cleanup());
 
@@ -558,7 +570,7 @@ it("turns an ordinary problem description into one combined diagnostic run", asy
   fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The machine is very slow" } });
   fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
-  await waitFor(() => expect(hostApi.diagnoseIssue).toHaveBeenCalledWith(host.id, "The machine is very slow"));
+  await waitFor(() => expect(hostApi.diagnoseCase).toHaveBeenCalledWith(host.id, "The machine is very slow", undefined));
   expect(hostApi.planDiagnostic).not.toHaveBeenCalled();
   expect(await screen.findByText("Combined check complete · 2/2")).toBeTruthy();
   expect(screen.getByText("find why device performance is slow and get it running smoothly")).toBeTruthy();
@@ -569,6 +581,96 @@ it("turns an ordinary problem description into one combined diagnostic run", asy
   expect(screen.getByText("Resource-use information is available")).toBeTruthy();
   expect(screen.queryByText("df -h")).toBeNull();
   expect(screen.queryByText("/dev/sda1 95% /")).toBeNull();
+});
+
+it("restores an unfinished host operations case without running the diagnosis again", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const restoredRun = {
+    id: "hdr_restored", targetRevision: host.revision, createdAt: "2026-08-30T00:00:00.000Z", version: 1 as const, intent: "performance" as const, risk: "read_only" as const, primaryAction: "disk_usage" as const,
+    understanding: { version: 1 as const, goal: "improve" as const, domain: "performance" as const, symptom: "slow" as const, desiredOutcome: "improve_performance" as const, requestedChange: "none" as const, handling: "read_only_diagnosis" as const, confidence: "high" as const },
+    summary: { version: 1 as const, severity: "warning" as const, finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
+    steps: [{ action: "disk_usage" as const, status: "completed" as const, summary: { version: 1 as const, severity: "warning" as const, finding: "disk_capacity_warning", impact: "storage_pressure_possible", nextAction: "review_storage_use", facts: [] } }],
+  };
+  const restoredCase = {
+    id: "hoc_restored", sshTargetId: host.id, incidentId: null, version: 1 as const, intent: restoredRun.intent, understanding: restoredRun.understanding,
+    status: "diagnosed" as const, nextStep: "review_findings" as const, diagnosticRunId: restoredRun.id, remediationPlanId: null, targetRevision: host.revision,
+    deviceChanged: false, lastError: null, timeline: [{ kind: "case_opened" as const, at: restoredRun.createdAt, deviceChanged: false }, { kind: "diagnosis_completed" as const, at: restoredRun.createdAt, deviceChanged: false, diagnosticRunId: restoredRun.id, severity: "warning" as const }],
+    latestRun: restoredRun, createdAt: restoredRun.createdAt, updatedAt: restoredRun.createdAt,
+  };
+  vi.mocked(hostApi.operationCases).mockResolvedValue({ cases: [restoredCase], count: 1, activeCase: restoredCase });
+  renderView();
+
+  expect(await screen.findByText("Current issue")).toBeTruthy();
+  expect(screen.getByText("This issue has a check result")).toBeTruthy();
+  expect(screen.getByText("Device unchanged")).toBeTruthy();
+  expect(await screen.findByText("Combined check complete · 1/1")).toBeTruthy();
+  expect(hostApi.diagnoseCase).not.toHaveBeenCalled();
+});
+
+it("offers to resume a host operations case interrupted during diagnosis", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const interruptedCase = {
+    id: "hoc_interrupted", sshTargetId: host.id, incidentId: null, version: 1 as const, intent: "performance" as const, understanding: { version: 1 as const, goal: "improve" as const, domain: "performance" as const, symptom: "slow" as const, desiredOutcome: "improve_performance" as const, requestedChange: "none" as const, handling: "read_only_diagnosis" as const, confidence: "high" as const },
+    status: "checking" as const, nextStep: "wait_for_diagnosis" as const, diagnosticRunId: null, remediationPlanId: null, targetRevision: host.revision,
+    deviceChanged: false, lastError: null, timeline: [{ kind: "case_opened" as const, at: "2026-08-30T00:00:00.000Z", deviceChanged: false }],
+    latestRun: null, createdAt: "2026-08-30T00:00:00.000Z", updatedAt: "2026-08-30T00:00:00.000Z",
+  };
+  vi.mocked(hostApi.operationCases).mockResolvedValue({ cases: [interruptedCase], count: 1, activeCase: interruptedCase });
+  renderView();
+
+  expect(await screen.findByRole("button", { name: "Continue check" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Continue check" }));
+
+  await waitFor(() => expect(hostApi.diagnoseCase).toHaveBeenCalledWith(host.id, undefined, undefined, interruptedCase.id));
+});
+
+it("shows historical host operations cases with their phase and full timeline", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const historyCase = {
+    id: "hoc_history", sshTargetId: host.id, incidentId: null, version: 1 as const, intent: "website" as const,
+    understanding: { version: 1 as const, goal: "restore" as const, domain: "website" as const, symptom: "unavailable" as const, desiredOutcome: "restore_availability" as const, requestedChange: "none" as const, handling: "read_only_diagnosis" as const, confidence: "high" as const },
+    status: "recovered" as const, nextStep: "case_complete" as const, diagnosticRunId: "hdr_history", remediationPlanId: "hrp_history", targetRevision: host.revision,
+    deviceChanged: true, lastError: null, timeline: [
+      { kind: "case_opened" as const, at: "2026-08-30T00:00:00.000Z", deviceChanged: false },
+      { kind: "diagnosis_completed" as const, at: "2026-08-30T00:01:00.000Z", deviceChanged: false, diagnosticRunId: "hdr_history", severity: "warning" as const },
+      { kind: "remediation_completed" as const, at: "2026-08-30T00:03:00.000Z", deviceChanged: true, remediationPlanId: "hrp_history" },
+    ],
+    latestRun: { id: "hdr_history", targetRevision: host.revision, createdAt: "2026-08-30T00:01:00.000Z", version: 1 as const, intent: "website" as const, risk: "read_only" as const, steps: [], summary: { version: 1 as const, severity: "warning" as const, finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] } },
+    createdAt: "2026-08-30T00:00:00.000Z", updatedAt: "2026-08-30T00:03:00.000Z",
+  };
+  vi.mocked(hostApi.operationCases).mockResolvedValue({ cases: [historyCase], count: 1, activeCase: null });
+  renderView();
+
+  expect(await screen.findByTestId("host-operations-history")).toBeTruthy();
+  expect(screen.getByText("Case history")).toBeTruthy();
+  fireEvent.click(screen.getByText("Case history"));
+  expect(await screen.findByText("This issue is resolved")).toBeTruthy();
+  expect(screen.getByText("Recovered")).toBeTruthy();
+  fireEvent.click(screen.getByText("This issue is resolved"));
+  expect(await screen.findByText("Full timeline · 3 events")).toBeTruthy();
+  expect(screen.getByText("Action outcome confirmed")).toBeTruthy();
+  expect(screen.getByText("This step confirms that the device changed.")).toBeTruthy();
+});
+
+it("routes a sign-in recovery next step to the credential flow", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const failedHost = { ...host, authMethod: "password_ref" as const, connectionStatus: "error" as const, lastConnectionError: { code: "ssh_authentication_failed", at: "2026-08-30T00:00:00.000Z" } };
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [failedHost], count: 1 });
+  const signInCase = {
+    id: "hoc_sign_in", sshTargetId: host.id, incidentId: null, version: 1 as const, intent: "health" as const,
+    understanding: { version: 1 as const, goal: "inspect" as const, domain: "device" as const, symptom: "unspecified" as const, desiredOutcome: "understand_state" as const, requestedChange: "none" as const, handling: "read_only_diagnosis" as const, confidence: "medium" as const },
+    status: "needs_help" as const, nextStep: "update_sign_in" as const, diagnosticRunId: null, remediationPlanId: null, targetRevision: host.revision,
+    deviceChanged: false, lastError: "ssh_authentication_failed", timeline: [{ kind: "diagnosis_incomplete" as const, at: "2026-08-30T00:00:00.000Z", deviceChanged: false, error: "ssh_authentication_failed" }],
+    latestRun: null, createdAt: "2026-08-30T00:00:00.000Z", updatedAt: "2026-08-30T00:00:00.000Z",
+  };
+  vi.mocked(hostApi.operationCases).mockResolvedValue({ cases: [signInCase], count: 1, activeCase: signInCase });
+  renderView();
+
+  const recoveryButtons = await screen.findAllByRole("button", { name: "Update sign-in details" });
+  expect(recoveryButtons.length).toBeGreaterThan(0);
+  fireEvent.click(recoveryButtons[0]);
+  expect(await screen.findByRole("heading", { name: "Update sign-in details" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Save and reconnect" })).toBeTruthy();
 });
 
 it("acknowledges a requested host change but keeps the ordinary flow diagnosis-first", async () => {

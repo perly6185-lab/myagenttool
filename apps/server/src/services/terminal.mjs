@@ -333,8 +333,8 @@ export function createTerminalService({
     return { ok: true, action: plan.action, command: plan.command, risk: "read_only", ...(Object.keys(plan.parameters ?? {}).length ? { parameters: plan.parameters } : {}) };
   }
 
-  async function runSshHostDiagnosticRun(target, input, actor = null) {
-    const plan = hostDiagnosticRunPlanForInput(input);
+  async function runSshHostDiagnosticRun(target, input, actor = null, options = {}) {
+    const plan = options.plan ?? hostDiagnosticRunPlanForInput(input);
     if (!plan) return { ok: false, status: 422, error: "ssh_diagnostic_intent_unsupported" };
     const steps = [];
     for (const planned of plan.steps) {
