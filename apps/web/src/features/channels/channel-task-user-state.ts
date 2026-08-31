@@ -6,6 +6,8 @@ export type ChannelTaskUserAction =
   | "open_approvals"
   | "retry_task"
   | "retry_delivery"
+  | "fix_with_ai"
+  | "rerun_verification"
   | "open_sessions"
   | "view_task";
 
@@ -53,6 +55,48 @@ export function channelTaskUserState({ thread, task, delivery, revision, now = D
       nextStep: "任务结果已经生成，但消息没有送达；可以重新发送结果。",
       action: "retry_delivery",
       actionLabel: "重新发送结果",
+    };
+  }
+
+  // Prefer the shared WorkItem journey for completion and verification. The
+  // thread remains conversation state, but it must not independently promote a
+  // task to "completed" while canonical task evidence still needs review.
+  if (task?.journey?.stage === "verification_failed" || task?.journey?.stage === "needs_attention") {
+    const canFix = task.journey.stage === "verification_failed" && task.actions.fixWithAi === true;
+    const canReverify = task.journey.stage === "verification_failed" && task.actions.rerunVerification === true;
+    return {
+      label: "结果需要处理",
+      tone: "danger",
+      nextStep: canFix
+        ? `${task.resultVerification?.summary ?? "检查发现结果仍有未通过项"}。可以让 AI 按检查结果继续返工，原结果和记录会保留。`
+        : canReverify
+          ? `${task.resultVerification?.summary ?? "检查结果需要确认"}。可以重新运行验证，不会重新执行或发送结果。`
+          : task.resultVerification?.summary
+            ?? "任务结果或完成依据仍有未通过项，请打开任务查看并按检查结果处理。",
+      action: canFix ? "fix_with_ai" : canReverify ? "rerun_verification" : thread.workItemId ? "view_task" : null,
+      actionLabel: canFix ? "让 AI 按检查返工" : canReverify ? "重新运行验证" : thread.workItemId ? "查看检查结果" : null,
+    };
+  }
+
+  if (task?.journey?.stage === "ready_to_complete") {
+    return {
+      label: "结果待确认",
+      tone: "warning",
+      nextStep: task.journey.result.verified
+        ? "结果和检查已经就绪，请查看并确认；确认后才会计为真正完成。"
+        : "结果已经生成，但完成依据仍需核对，请打开任务查看检查情况。",
+      action: thread.workItemId ? "view_task" : null,
+      actionLabel: thread.workItemId ? "查看并确认" : null,
+    };
+  }
+
+  if (task?.journey?.stage === "completed") {
+    return {
+      label: "已真正完成",
+      tone: "success",
+      nextStep: "任务状态、结果检查和投递依据已经闭环；需要时可以查看结果或继续提出修改。",
+      action: thread.workItemId ? "view_task" : null,
+      actionLabel: thread.workItemId ? "查看任务结果" : null,
     };
   }
 

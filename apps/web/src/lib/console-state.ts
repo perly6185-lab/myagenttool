@@ -1659,15 +1659,48 @@ export interface ChannelTaskRequest {
     repair?: { required: boolean; mode: "independent_task"; reasons: string[]; suggestedRequest: string } | null;
   } | null;
   deliveryStatus?: string | null;
+  actionReceipt?: ChannelTaskActionReceipt | null;
+  journey?: {
+    schemaVersion: 1;
+    origin: string;
+    stage: string;
+    status: "pending" | "active" | "waiting" | "attention" | "ready" | "completed" | "cancelled";
+    waitingFor: string | null;
+    requiresUserAction: boolean;
+    reasonCodes: string[];
+    nextAction: { kind: string; target: "task" | "channel" | "approval"; required: boolean };
+    result: { available: boolean; verificationStatus: string; verified: boolean; deliveryStatus: string | null; delivered: boolean };
+    refs?: { workItemId: string | null; threadId: string | null; autoRunId: string | null; deliveryId: string | null };
+  } | null;
   createdAt?: string | null;
   actions: {
     retry: boolean;
+    fixWithAi?: boolean;
+    rerunVerification?: boolean;
+    retryDelivery?: boolean;
     reroute: boolean;
     takeover: boolean;
     reconcileSaved?: boolean;
     reconcileNotSaved?: boolean;
     connectLogin?: boolean;
   };
+}
+
+export interface ChannelTaskActionReceipt {
+  schemaVersion: 1;
+  id: string;
+  kind: "retry_execution" | "fix_with_ai" | "rerun_verification" | "retry_channel_delivery" | string;
+  status: "accepted" | "running" | "succeeded" | "failed" | "safe_to_retry" | "unknown";
+  messageCode: string | null;
+  impact: "none" | "proposed" | "applied" | "unknown";
+  nextOwner: "ai" | "me" | "system" | "none";
+  requestedAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+  targetId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  replayed: boolean;
 }
 
 /** One dispatcher routing decision (state.dispatchAssignments) — the "why here". */

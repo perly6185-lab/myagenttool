@@ -60,6 +60,7 @@ import { projectWorkItemExecutionReview } from "./work-item-execution-review.mjs
 import { projectWorkItemPlanActual } from "./work-item-plan-actual.mjs";
 import { assessWorkItemCompletion, taskCompletionQualityMetrics } from "./work-item-completion-assessment.mjs";
 import { projectWorkItemContextSummary } from "./work-item-context-summary.mjs";
+import { projectWorkItemJourney } from "./work-item-journey.mjs";
 import { buildWorkItemIntentContract, freezeWorkItemIntentContract } from "./work-item-intent-contract.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
@@ -1087,6 +1088,7 @@ export function createWorkItemService({
   state.myTemplateDrafts ??= [];
   state.myTemplateLearningCases ??= [];
   state.routineDefinitions ??= [];
+  state.workItemAcceptanceBatches ??= [];
   const runTx = makeRunTx({ store, persistStateSoon });
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
@@ -1979,47 +1981,184 @@ export function createWorkItemService({
     };
   }
 
-  function getCompletionMetrics(query = {}, actor = null) {
+  function metricWorkItemIds(value) {
+    const candidates = Array.isArray(value) ? value : String(value ?? "").split(",");
+    const ids = [...new Set(candidates.map((entry) => String(entry ?? "").trim()).filter(Boolean))];
+    if (ids.length > 500 || ids.some((id) => id.length > 200)) return null;
+    return ids;
+  }
+
+  function buildCompletionMetricsReport(query = {}, actor = null) {
     const projectId = String(query.projectId ?? "").trim();
+    const origin = String(query.origin ?? "all").trim().toLowerCase() || "all";
+    const requestedWorkItemIds = metricWorkItemIds(query.workItemIds);
+    if (!requestedWorkItemIds) {
+      return { ok: false, status: 400, body: { error: "invalid_completion_metrics_work_item_ids" } };
+    }
+    if (!["all", "channel", "task"].includes(origin)) {
+      return { ok: false, status: 400, body: { error: "invalid_completion_metrics_origin" } };
+    }
     if (projectId && !actorCanAccessProject(state, actor, projectId)) return notFound();
+    const channelWorkItemIds = new Set((state.channelTaskThreads ?? []).map((thread) => thread.workItemId).filter(Boolean));
     const items = (state.workItems ?? [])
       .filter((item) => item.ownerTeamId === actorTeam(actor))
+      .filter((item) => !requestedWorkItemIds.length || requestedWorkItemIds.includes(item.id))
       .filter((item) => !projectId || item.projectId === projectId)
+      .filter((item) => {
+        if (origin === "all") return true;
+        const fromChannel = Boolean(item.channelOrigin?.channelId) || channelWorkItemIds.has(item.id);
+        return origin === "channel" ? fromChannel : !fromChannel;
+      })
       .filter((item) => !item.archivedAt)
       .filter((item) => (item.executionBindings ?? []).length > 0
         || item.executionStartRequest
         || ["in_progress", "review", "blocked", "done"].includes(item.status)
         || item.state === "closed");
+    if (requestedWorkItemIds.length) {
+      const selectedIds = new Set(items.map((item) => item.id));
+      if (requestedWorkItemIds.some((id) => !selectedIds.has(id))) {
+        return { ok: false, status: 404, body: { error: "completion_metrics_work_item_not_found" } };
+      }
+    }
     const assessments = [];
+    const samples = [];
     const runIds = new Set();
+    const runWorkItemIds = new Map();
     for (const item of items) {
       for (const binding of item.executionBindings ?? []) {
-        if (binding.kind === "auto_run" && binding.targetId) runIds.add(binding.targetId);
+        if (binding.kind === "auto_run" && binding.targetId) {
+          runIds.add(binding.targetId);
+          runWorkItemIds.set(binding.targetId, item.id);
+        }
       }
       const detail = getWorkItem({ workItemId: item.id }, actor);
-      if (detail.ok) assessments.push(detail.body.observability?.completionAssessment ?? null);
+      if (detail.ok) {
+        const assessment = detail.body.observability?.completionAssessment ?? null;
+        assessments.push(assessment);
+        if (assessment) samples.push({
+          workItemId: item.id,
+          category: assessment.category ?? "task",
+          assessment,
+        });
+      }
     }
     const receipts = [];
     for (const entry of state.executionActionIdempotencyRecords ?? []) {
-      if (runIds.has(entry.autoRunId) && entry.receipt) receipts.push(entry.receipt);
+      if (runIds.has(entry.autoRunId) && entry.receipt) receipts.push({
+        ...entry.receipt,
+        workItemId: entry.receipt.workItemId ?? runWorkItemIds.get(entry.autoRunId) ?? null,
+      });
     }
     for (const autoRun of state.autoRuns ?? []) {
       if (!runIds.has(autoRun.id)) continue;
-      receipts.push(...(autoRun.executionActionReceipts ?? []));
+      receipts.push(...(autoRun.executionActionReceipts ?? []).map((receipt) => ({
+        ...receipt,
+        workItemId: receipt.workItemId ?? runWorkItemIds.get(autoRun.id) ?? null,
+      })));
     }
+    const body = {
+      generatedAt: now(),
+      scope: {
+        projectId: projectId || null,
+        origin,
+        trackedWorkItems: assessments.filter(Boolean).length,
+        trackedAutoRuns: runIds.size,
+        workItemIds: items.map((item) => item.id),
+      },
+      metrics: taskCompletionQualityMetrics({ assessments, receipts, samples }),
+    };
     return {
       ok: true,
       status: 200,
-      body: {
-        generatedAt: now(),
-        scope: {
-          projectId: projectId || null,
-          trackedWorkItems: assessments.filter(Boolean).length,
-          trackedAutoRuns: runIds.size,
-        },
-        metrics: taskCompletionQualityMetrics({ assessments, receipts }),
-      },
+      body,
+      workItemIds: items.map((item) => item.id),
     };
+  }
+
+  function getCompletionMetrics(query = {}, actor = null) {
+    const { workItemIds: _workItemIds, ...result } = buildCompletionMetricsReport(query, actor);
+    return result;
+  }
+
+  function completionMetricsBatchView(batch) {
+    return {
+      id: batch.id,
+      schemaVersion: batch.schemaVersion,
+      label: batch.label,
+      cohortKey: batch.cohortKey,
+      queueType: batch.queueType,
+      projectId: batch.projectId,
+      origin: batch.origin,
+      workItemIds: [...batch.workItemIds],
+      report: batch.report,
+      createdAt: batch.createdAt,
+      createdBy: batch.createdBy,
+    };
+  }
+
+  function createCompletionMetricsBatch(input = {}, actor = null) {
+    const label = String(input.label ?? "").trim().slice(0, 200);
+    const cohortKey = String(input.cohortKey ?? "").trim().slice(0, 200);
+    const idempotencyKey = String(input.idempotencyKey ?? "").trim().slice(0, 200);
+    const queueType = String(input.queueType ?? "mixed").trim().toLowerCase();
+    if (!label) return { ok: false, status: 400, body: { error: "completion_metrics_batch_label_required" } };
+    if (!cohortKey) return { ok: false, status: 400, body: { error: "completion_metrics_batch_cohort_required" } };
+    if (!idempotencyKey) return { ok: false, status: 400, body: { error: "idempotency_key_required" } };
+    if (!["normal", "recovery", "mixed"].includes(queueType)) {
+      return { ok: false, status: 400, body: { error: "invalid_completion_metrics_batch_queue_type" } };
+    }
+    const existing = state.workItemAcceptanceBatches.find((batch) =>
+      batch.ownerTeamId === actorTeam(actor) && batch.idempotencyKey === idempotencyKey) ?? null;
+    if (existing) return { ok: true, status: 200, body: { batch: completionMetricsBatchView(existing), replayed: true } };
+    const reportResult = buildCompletionMetricsReport({
+      projectId: input.projectId,
+      origin: input.origin,
+      workItemIds: input.workItemIds,
+    }, actor);
+    if (!reportResult.ok) return reportResult;
+    const createdAt = now();
+    const batch = {
+      id: nextId("qab"),
+      schemaVersion: 1,
+      ownerTeamId: actorTeam(actor),
+      projectId: reportResult.body.scope.projectId,
+      origin: reportResult.body.scope.origin,
+      queueType,
+      label,
+      cohortKey,
+      idempotencyKey,
+      workItemIds: reportResult.workItemIds,
+      report: structuredClone(reportResult.body),
+      createdAt,
+      createdBy: actorUser(actor),
+    };
+    runTx(() => state.workItemAcceptanceBatches.push(batch));
+    return { ok: true, status: 201, body: { batch: completionMetricsBatchView(batch), replayed: false } };
+  }
+
+  function listCompletionMetricsBatches(query = {}, actor = null) {
+    const projectId = String(query.projectId ?? "").trim();
+    const origin = String(query.origin ?? "all").trim().toLowerCase() || "all";
+    const cohortKey = String(query.cohortKey ?? "").trim();
+    const queueType = String(query.queueType ?? "").trim().toLowerCase();
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    if (!["all", "channel", "task"].includes(origin)) {
+      return { ok: false, status: 400, body: { error: "invalid_completion_metrics_origin" } };
+    }
+    if (queueType && !["normal", "recovery", "mixed"].includes(queueType)) {
+      return { ok: false, status: 400, body: { error: "invalid_completion_metrics_batch_queue_type" } };
+    }
+    if (projectId && !actorCanAccessProject(state, actor, projectId)) return notFound();
+    const batches = state.workItemAcceptanceBatches
+      .filter((batch) => batch.ownerTeamId === actorTeam(actor))
+      .filter((batch) => !projectId || batch.projectId === projectId)
+      .filter((batch) => origin === "all" || batch.origin === origin)
+      .filter((batch) => !cohortKey || batch.cohortKey === cohortKey)
+      .filter((batch) => !queueType || batch.queueType === queueType)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+      .slice(0, limit)
+      .map(completionMetricsBatchView);
+    return { ok: true, status: 200, body: { batches, count: batches.length } };
   }
 
   function getHomeWorkbench(query = {}, actor = null) {
@@ -2929,6 +3068,27 @@ export function createWorkItemService({
       planActual,
       completionGate: completionGate(projectedItem),
     });
+    const channelThread = (state.channelTaskThreads ?? []).find((thread) =>
+      thread.workItemId === item.id
+      || (item.channelOrigin?.threadId && thread.id === item.channelOrigin.threadId)) ?? null;
+    const channelDelivery = [...(state.channelDeliveries ?? [])]
+      .filter((delivery) => delivery.taskContext?.workItemId === item.id
+        || (channelThread?.id && delivery.taskContext?.threadId === channelThread.id))
+      .filter((delivery) => !delivery.ownerTeamId || delivery.ownerTeamId === actorTeam(actor))
+      .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "")
+        .localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))[0] ?? null;
+    const journey = projectWorkItemJourney({
+      item: projectedItem,
+      latestRun,
+      invocation: latestExecutionInvocation,
+      thread: channelThread,
+      delivery: channelDelivery,
+      contextSummary: taskContextSummary,
+      completionAssessment,
+      resultVerification: projectedItem.resultVerification ?? null,
+      outcome: taskOutcome,
+      attention,
+    });
     return {
       ok: true,
       status: 200,
@@ -2940,6 +3100,7 @@ export function createWorkItemService({
           executionReview,
           planActual,
           completionAssessment,
+          journey,
           attention,
           latestRun: latestRun ? {
             id: latestRun.id,
@@ -8229,7 +8390,7 @@ export function createWorkItemService({
   }
 
   return {
-    listWorkItems, getCompletionMetrics, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+    listWorkItems, getCompletionMetrics, createCompletionMetricsBatch, listCompletionMetricsBatches, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
     listReportDrafts: reportDraftService.list,
     getReportDraft: reportDraftService.get,
     generateReportDraft: reportDraftService.generate,

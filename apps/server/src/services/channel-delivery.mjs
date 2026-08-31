@@ -654,7 +654,7 @@ export function createChannelDeliveryService({
    * Owner-team scoped (foreign → 404) and approval-gated — a human explicitly
    * re-authorizes the send. Confirmed deliveries remain ineligible.
    */
-  function retryChannelDelivery({ channelId, deliveryId, approvalToken } = {}, actor = null) {
+  function retryChannelDelivery({ channelId, deliveryId, approvalToken, recoveryRequestId = null } = {}, actor = null) {
     const channel = findChannel(String(channelId ?? ""));
     if (!channel || (actor?.teamId && (channel.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId)) {
       return { ok: false, status: 404, body: { error: "channel_not_found" } };
@@ -705,6 +705,9 @@ export function createChannelDeliveryService({
       delivery.providerClientId = `${delivery.id}-retry-${Date.parse(now())}`;
       delivery.resendCount = Number(delivery.resendCount ?? 0) + 1;
       delivery.lastResentAt = now();
+      delivery.lastManualRetryRequestId = recoveryRequestId == null
+        ? null
+        : String(recoveryRequestId).trim().slice(0, 200) || null;
       delivery.nextManualRetryAt = null;
       delivery.lastErrorCode = null;
       delivery.nextAttemptAt = now();

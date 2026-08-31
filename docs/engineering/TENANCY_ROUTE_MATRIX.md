@@ -90,6 +90,8 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
 | channels | POST/DELETE `/api/channels/:id/identities[/:iid]` | team | ✅ same guard; mapped user must belong to the channel's team (cross-team mapping → 404) |
 | channels | GET `/api/channels[…]` | team | ✅ list/health/identities filtered to the actor's team; `buildPublicState` scopes channel child rows by channel visibility |
 | channels | POST `/api/channels/:id/allowlist` | team | ✅ same `findOwnChannel` guard; additionally approval-gated (`channel.allowlist` grant) |
+| channels | POST `/api/channel-tasks/:id/(retry\|commands)` | team | ✅ resolves the request through `findOwnChannelTask` (foreign → 404), then executes the task-bound command through the shared review-command admission and idempotency ledger |
+| channels | POST `/api/channels/:id/deliveries/:deliveryId/retry` | team | ✅ owner-team scoped and approval-gated; task-result deliveries additionally use the shared task command receipt and durable idempotency ledger |
 
 ## Resolved in the P1.2 pass
 

@@ -13,6 +13,7 @@ const DELIVERY_ACTIONS = new Set([
   "apply_office_result",
   "apply_local_changes",
 ]);
+const CHANNEL_ACTIONS = new Set(["retry_channel_delivery"]);
 
 function commandError(code, message, status = 400, details = {}, actionReceipt = null) {
   const error = new Error(message || code);
@@ -89,6 +90,7 @@ export function createWorkItemReviewCommandService({
   beginDelivery,
   failDelivery,
   completeDelivery,
+  retryChannelDelivery,
 } = {}) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
@@ -483,9 +485,171 @@ export function createWorkItemReviewCommandService({
     }
   }
 
+  function channelDeliveryContext(delivery) {
+    const thread = (state?.channelTaskThreads ?? []).find((candidate) =>
+      candidate.id === delivery?.taskContext?.threadId
+      || (delivery?.taskContext?.workItemId && candidate.workItemId === delivery.taskContext.workItemId)) ?? null;
+    const workItemId = delivery?.taskContext?.workItemId ?? thread?.workItemId ?? null;
+    const item = workItemId
+      ? (state?.workItems ?? []).find((candidate) => candidate.id === workItemId) ?? null
+      : null;
+    const invocation = delivery?.invocationId
+      ? (state?.invocations ?? []).find((candidate) => candidate.id === delivery.invocationId) ?? null
+      : null;
+    const boundRunId = delivery?.taskContext?.autoRunId
+      ?? thread?.autoRunId
+      ?? invocation?.options?.metadata?.autoRunId
+      ?? [...(item?.executionBindings ?? [])].reverse().find((binding) => binding.kind === "auto_run")?.targetId
+      ?? null;
+    const autoRun = boundRunId
+      ? (state?.autoRuns ?? []).find((candidate) => candidate.id === boundRunId) ?? null
+      : null;
+    return { thread, item, autoRun };
+  }
+
+  async function executeChannelDeliveryCommand(command, actor) {
+    const deliveryId = requireTargetId(command);
+    const request = command.request ?? {};
+    const idempotencyKey = String(request.idempotencyKey ?? "").trim();
+    if (!idempotencyKey) {
+      throw commandError("idempotency_key_required", "A Channel delivery recovery idempotency key is required.");
+    }
+    const delivery = (state?.channelDeliveries ?? []).find((candidate) => candidate.id === deliveryId) ?? null;
+    if (!delivery) throw commandError("delivery_not_found", "Channel delivery not found.", 404);
+    const { item, autoRun } = channelDeliveryContext(delivery);
+    if (!item || !autoRun) {
+      throw commandError(
+        "channel_delivery_task_binding_required",
+        "This delivery is not bound to a tracked task execution.",
+        409,
+      );
+    }
+    const channelId = String(request.channelId ?? delivery.channelId ?? "").trim();
+    if (!channelId || channelId !== delivery.channelId) {
+      throw commandError("review_command_stale", "The Channel delivery target changed.", 409);
+    }
+    const expectedDeliveryStatus = String(request.expectedDeliveryStatus ?? "").trim() || null;
+    // Expected status is an optimistic-concurrency precondition, not part of
+    // the requested side effect. Excluding it keeps an HTTP replay valid after
+    // the first attempt has moved the delivery from failed to queued.
+    const actionRequest = { channelId, deliveryId };
+    let receipt = replayExecutionAction(autoRun, {
+      kind: command.kind,
+      idempotencyKey,
+      request: actionRequest,
+      state,
+    });
+    if (receipt) {
+      if (delivery.lastManualRetryRequestId === receipt.id) {
+        if (receipt.status !== "succeeded") {
+          runTx(() => updateExecutionAction(receipt, {
+            status: "succeeded",
+            messageCode: "channel_delivery_retry_queued",
+            impact: "proposed",
+            nextOwner: "system",
+            targetId: delivery.id,
+            now,
+          }));
+        }
+        return {
+          delivery: { deliveryId: delivery.id, status: delivery.status },
+          actionReceipt: executionActionReceiptView(receipt, { now: now(), autoRun, replayed: true }),
+          replayed: true,
+        };
+      }
+      const actionReceipt = executionActionReceiptView(receipt, { now: now(), autoRun, replayed: true });
+      if (actionReceipt.status === "failed") {
+        throw commandError(
+          actionReceipt.errorCode ?? "channel_delivery_retry_failed",
+          actionReceipt.errorMessage ?? "The Channel delivery retry failed.",
+          409,
+          {},
+          actionReceipt,
+        );
+      }
+      if (["running", "accepted", "unknown"].includes(actionReceipt.status)
+        && (!expectedDeliveryStatus || delivery.status === expectedDeliveryStatus)) {
+        // The queue mutation and recoveryRequestId are committed together. If
+        // the marker is absent, the previous process did not re-queue anything.
+        // It is therefore safe to resume this same command below.
+      } else {
+        return { delivery: { deliveryId: delivery.id, status: delivery.status }, actionReceipt, replayed: true };
+      }
+    } else {
+      if (expectedDeliveryStatus && delivery.status !== expectedDeliveryStatus) {
+        throw commandError(
+          "review_command_stale",
+          "The Channel delivery changed after this review was loaded.",
+          409,
+          { currentDeliveryStatus: delivery.status },
+        );
+      }
+      ({ receipt } = runTx(() => beginExecutionAction({
+        state,
+        autoRun,
+        kind: command.kind,
+        actor,
+        idempotencyKey,
+        expectedWorkItemRevision: request.expectedWorkItemRevision,
+        expectedTargetStatus: request.expectedTargetStatus,
+        request: actionRequest,
+        nextOwner: "system",
+        now,
+        nextId,
+      })));
+    }
+
+    runTx(() => updateExecutionAction(receipt, {
+      status: "running",
+      messageCode: "channel_delivery_retry_starting",
+      impact: "none",
+      nextOwner: "system",
+      targetId: delivery.id,
+      externalActionAttempt: !Number(receipt.externalActionAttemptCount),
+      now,
+    }));
+    const result = typeof retryChannelDelivery === "function"
+      ? await retryChannelDelivery({
+          channelId,
+          deliveryId,
+          approvalToken: request.approvalToken,
+          recoveryRequestId: receipt.id,
+        }, actor)
+      : { ok: false, status: 503, body: { error: "channel_delivery_retry_unavailable" } };
+    if (!result?.ok) {
+      const error = resultError(result);
+      runTx(() => updateExecutionAction(receipt, {
+        status: "failed",
+        messageCode: error.code,
+        impact: "none",
+        nextOwner: "me",
+        targetId: delivery.id,
+        errorCode: error.code,
+        errorMessage: error.message,
+        now,
+      }));
+      error.actionReceipt = executionActionReceiptView(receipt, { now: now(), autoRun });
+      throw error;
+    }
+    runTx(() => updateExecutionAction(receipt, {
+      status: "succeeded",
+      messageCode: "channel_delivery_retry_queued",
+      impact: "proposed",
+      nextOwner: "system",
+      targetId: delivery.id,
+      now,
+    }));
+    return {
+      delivery: result.body,
+      actionReceipt: executionActionReceiptView(receipt, { now: now(), autoRun }),
+      replayed: false,
+    };
+  }
+
   async function execute(command = {}, actor = null) {
     if (AUTO_RUN_ACTIONS.has(command.kind)) return executeAutoRunCommand(command, actor);
     if (DELIVERY_ACTIONS.has(command.kind)) return executeDeliveryCommand(command, actor);
+    if (CHANNEL_ACTIONS.has(command.kind)) return executeChannelDeliveryCommand(command, actor);
     throw commandError("review_command_kind_invalid", "The review action is not supported.");
   }
 

@@ -421,7 +421,7 @@ describe("WorkItemReportSection", () => {
 
     render(<WorkItemReportSection item={item} />);
     fireEvent.change(await screen.findByLabelText("Audience"), { target: { value: "self" } });
-    expect(screen.queryByLabelText("Audience name")).toBeNull();
+    await waitFor(() => expect(screen.queryByLabelText("Audience name")).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(apiMocks.update).toHaveBeenCalledWith(item.id, current.id, expect.objectContaining({

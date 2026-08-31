@@ -1,6 +1,6 @@
 import { AlertTriangle, CheckCircle2, CircleHelp, Clock3, OctagonX, Square } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import type { WorkItemCompletionAssessment } from "./task-view-types";
+import type { WorkItemCompletionAssessment, WorkItemJourney } from "./task-view-types";
 
 const COPY = {
   pending: {
@@ -31,9 +31,11 @@ const COPY = {
 
 export function WorkItemCompletionStatus({
   assessment,
+  journey,
   language,
 }: {
   assessment: WorkItemCompletionAssessment;
+  journey?: WorkItemJourney | null;
   language: "zh" | "en";
 }) {
   const copy = COPY[assessment.status][language];
@@ -64,8 +66,29 @@ export function WorkItemCompletionStatus({
             <Badge tone={config.tone}>{copy[0]}</Badge>
           </div>
           <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">{copy[1]}</p>
+          {journey ? <p className="mt-2 text-xs font-medium text-foreground/80" data-testid="work-item-journey-next-action">
+            {language === "zh" ? "下一步：" : "Next: "}{journeyNextAction(journey.nextAction.kind, language)}
+          </p> : null}
         </div>
       </div>
     </section>
   );
+}
+
+function journeyNextAction(kind: string, language: "zh" | "en") {
+  const copy: Record<string, { zh: string; en: string }> = {
+    none: { zh: "无需操作，任务已经闭环", en: "No action needed; the task is complete" },
+    wait: { zh: "无需操作，系统会自动继续", en: "No action needed; the system will continue" },
+    review_result: { zh: "查看结果并确认", en: "Review and confirm the result" },
+    open_approval: { zh: "完成审批后继续", en: "Complete the approval to continue" },
+    answer_ai: { zh: "补充 AI 需要的信息", en: "Provide the information AI needs" },
+    reply_in_channel: { zh: "在原会话中补充或确认", en: "Reply in the original conversation" },
+    confirm_in_channel: { zh: "在原会话中确认执行", en: "Confirm execution in the original conversation" },
+    retry_execution: { zh: "恢复并重试任务", en: "Recover and retry the task" },
+    retry_delivery: { zh: "重新发送结果", en: "Send the result again" },
+    create_repair_task: { zh: "按检查结果创建返工任务", en: "Create a repair task from the failed checks" },
+    inspect_failure: { zh: "查看阻塞原因并处理", en: "Inspect and resolve the blocker" },
+    start_execution: { zh: "确认并开始执行", en: "Confirm and start execution" },
+  };
+  return copy[kind]?.[language] ?? (language === "zh" ? "查看任务当前状态" : "Review the current task state");
 }

@@ -26,13 +26,22 @@ export function WorkItemCompletionMetricsCard({
   const { metrics } = report;
   const cards = [
     {
-      key: "completion",
-      title: zh ? "真正完成率" : "Verified completion",
-      value: percent(metrics.completion.completionRate, zh),
+      key: "first-completion",
+      title: zh ? "首次完成率" : "First-attempt completion",
+      value: percent(metrics.completion.firstAttempt.rate, zh),
       detail: zh
-        ? `${metrics.completion.completed}/${metrics.completion.settled} 个已结束任务证据闭环`
-        : `${metrics.completion.completed}/${metrics.completion.settled} settled tasks verified`,
-      check: metrics.completion.check,
+        ? `${metrics.completion.firstAttempt.completed}/${metrics.completion.firstAttempt.settled} 个任务无需恢复即证据闭环`
+        : `${metrics.completion.firstAttempt.completed}/${metrics.completion.firstAttempt.settled} settled tasks completed without recovery`,
+      check: metrics.completion.firstAttempt.check,
+    },
+    {
+      key: "final-completion",
+      title: zh ? "最终完成率" : "Final completion",
+      value: percent(metrics.completion.final.rate, zh),
+      detail: zh
+        ? `${metrics.completion.final.completed}/${metrics.completion.final.settled} 个已结束任务在恢复后证据闭环`
+        : `${metrics.completion.final.completed}/${metrics.completion.final.settled} settled tasks verified after recovery`,
+      check: metrics.completion.final.check,
     },
     {
       key: "recovery",
@@ -45,11 +54,11 @@ export function WorkItemCompletionMetricsCard({
     },
     {
       key: "intervention",
-      title: zh ? "人工介入率" : "Human intervention",
+      title: zh ? "被迫人工介入率" : "Forced human intervention",
       value: percent(metrics.humanIntervention.rate, zh),
       detail: zh
-        ? `${metrics.humanIntervention.count}/${metrics.completion.tracked} 个任务需要异常处理，不含正常确认`
-        : `${metrics.humanIntervention.count}/${metrics.completion.tracked} tasks needed exception handling; sign-off excluded`,
+        ? `${metrics.humanIntervention.count}/${metrics.completion.tracked} 个任务明确等待人工；另有 ${metrics.humanIntervention.userInitiatedRecovery.tasks} 个任务由用户主动恢复`
+        : `${metrics.humanIntervention.count}/${metrics.completion.tracked} tasks explicitly waited for a person; ${metrics.humanIntervention.userInitiatedRecovery.tasks} were voluntarily recovered`,
       check: metrics.humanIntervention.check,
     },
     {
@@ -83,7 +92,7 @@ export function WorkItemCompletionMetricsCard({
               : (zh ? "等待样本" : "Awaiting data")}
         </Badge>
       </div>
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
         {cards.map((card) => (
           <div key={card.key} className="space-y-1 rounded-lg border border-border bg-background p-3">
             <div className="flex flex-wrap items-center justify-between gap-1">
@@ -95,10 +104,36 @@ export function WorkItemCompletionMetricsCard({
           </div>
         ))}
       </div>
+      {Object.keys(metrics.byCategory).length ? (
+        <div className="overflow-x-auto rounded-lg border border-border bg-background">
+          <table className="w-full text-left text-xs">
+            <thead className="text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 font-medium">{zh ? "任务类型" : "Task type"}</th>
+                <th className="px-3 py-2 font-medium">{zh ? "样本" : "Samples"}</th>
+                <th className="px-3 py-2 font-medium">{zh ? "最终完成" : "Final completion"}</th>
+                <th className="px-3 py-2 font-medium">{zh ? "恢复" : "Recovery"}</th>
+                <th className="px-3 py-2 font-medium">{zh ? "被迫人工" : "Forced human"}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(metrics.byCategory).map(([category, row]) => row ? (
+                <tr key={category} className="border-t border-border">
+                  <td className="px-3 py-2">{{ development: zh ? "开发" : "Development", office: zh ? "办公" : "Office", material: zh ? "资料" : "Material", channel: "Channel", task: zh ? "其他任务" : "Other" }[category] ?? category}</td>
+                  <td className="px-3 py-2 tabular-nums">{row.tracked}</td>
+                  <td className="px-3 py-2 tabular-nums">{percent(row.finalCompletionRate, zh)}</td>
+                  <td className="px-3 py-2 tabular-nums">{row.recoverySucceeded}/{row.recoveryRequired}</td>
+                  <td className="px-3 py-2 tabular-nums">{row.forcedHumanInterventions}</td>
+                </tr>
+              ) : null)}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
       <p className="text-xs text-muted-foreground">
         {zh
-          ? `验收线：真正完成率 ≥ ${Math.round(metrics.completion.check.target * 100)}%，恢复成功率 ≥ ${Math.round(metrics.recovery.check.target * 100)}%，人工介入率 ≤ ${Math.round(metrics.humanIntervention.check.target * 100)}%，重复外部动作 = ${metrics.externalActions.check.target}。`
-          : `Targets: verified completion ≥ ${Math.round(metrics.completion.check.target * 100)}%, recovery ≥ ${Math.round(metrics.recovery.check.target * 100)}%, human intervention ≤ ${Math.round(metrics.humanIntervention.check.target * 100)}%, duplicate external actions = ${metrics.externalActions.check.target}.`}
+          ? `验收线：首次完成率 ≥ ${Math.round(metrics.completion.firstAttempt.check.target * 100)}%，最终完成率 ≥ ${Math.round(metrics.completion.final.check.target * 100)}%，恢复成功率 ≥ ${Math.round(metrics.recovery.check.target * 100)}%，被迫人工介入率 ≤ ${Math.round(metrics.humanIntervention.check.target * 100)}%，重复外部动作 = ${metrics.externalActions.check.target}。`
+          : `Targets: first-attempt completion ≥ ${Math.round(metrics.completion.firstAttempt.check.target * 100)}%, final completion ≥ ${Math.round(metrics.completion.final.check.target * 100)}%, recovery ≥ ${Math.round(metrics.recovery.check.target * 100)}%, forced human intervention ≤ ${Math.round(metrics.humanIntervention.check.target * 100)}%, duplicate external actions = ${metrics.externalActions.check.target}.`}
       </p>
     </section>
   );
