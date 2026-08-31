@@ -3,6 +3,8 @@
 Captured from the real Vite console with the deterministic ordinary-user host
 fixture in `apps/web/e2e/my-hosts-ordinary.spec.ts`.
 
+Acceptance source: [#1818](https://github.com/perly6185-lab/myagenttool/issues/1818).
+
 ## Desktop — 1440 px
 
 ![Expanded host health incident with impact, suggestion, and safe next step](./host-incident-guidance-1440w.png)
