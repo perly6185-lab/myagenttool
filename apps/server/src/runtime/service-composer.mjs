@@ -214,6 +214,7 @@ import { createHostFileService } from "../services/host-files.mjs";
 import { createHostTlsActivationProfileService } from "../services/host-tls-activation-profiles.mjs";
 import { createHostRemediationService } from "../services/host-remediation.mjs";
 import { createPinnedWebsiteHealthChecker } from "../services/host-website-health.mjs";
+import { createHostHealthMonitorService } from "../services/host-health-monitor.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
 import { createSiteCredentialVault } from "../services/site-credential-vault.mjs";
@@ -1314,6 +1315,17 @@ export function createServerRuntimeServices({
     resolveCredential: siteCredentialVault.resolveCredential,
     sshHostConnector,
     checkWebsiteHealth,
+    store,
+  });
+  const hostHealthMonitorService = createHostHealthMonitorService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    verifySshHostConnection,
+    runSshHostDiagnosticRun,
     store,
   });
 
@@ -8060,6 +8072,10 @@ export function createServerRuntimeServices({
     recheckHostRemediationPlan: hostRemediationService.recheckPlan,
     findHostRemediationPlan: hostRemediationService.findPlan,
     listHostRemediationPlans: hostRemediationService.listPlans,
+    getHostHealthOverview: hostHealthMonitorService.listOverview,
+    setHostHealthPolicy: hostHealthMonitorService.setPolicy,
+    checkHostHealthNow: hostHealthMonitorService.checkNow,
+    hostHealthSweep: hostHealthMonitorService.sweepDue,
     createManagedTerminalSession,
     queueTerminalBridgeAction,
     nextTerminalBridgeAction,

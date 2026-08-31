@@ -1,5 +1,5 @@
 import { ApiError, apiBase, csrfHeaders, ensureSession, request } from "@/lib/api/request";
-import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostDiagnosticRun, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResponse, HostFileTransfer, HostPurpose, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostDiagnosticRun, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResponse, HostFileTransfer, HostHealthOverview, HostHealthPolicy, HostHealthSnapshot, HostPurpose, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
 
 export const MAX_HOST_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -33,6 +33,12 @@ export const hostApi = {
     request<{ plan: HostRemediationPlan }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plans/${encodeURIComponent(planId)}`),
   recheckRemediation: (hostId: string, planId: string) =>
     request<{ plan: HostRemediationPlan }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plans/${encodeURIComponent(planId)}/recheck`, {}, true, 30_000),
+  health: (hostId: string) =>
+    request<HostHealthOverview>("GET", `/api/hosts/${encodeURIComponent(hostId)}/health`),
+  checkHealth: (hostId: string) =>
+    request<{ snapshot: HostHealthSnapshot }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/health/check`, {}, true, 180_000),
+  setHealthMonitoring: (hostId: string, input: { enabled: boolean; cadence: HostHealthPolicy["cadence"] }) =>
+    request<{ policy: HostHealthPolicy }>("PATCH", `/api/hosts/${encodeURIComponent(hostId)}/health/monitoring`, input),
   scopes: (hostId: string) =>
     request<{ scopes: HostFileScope[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes`),
   scopeSuggestions: (hostId: string) =>

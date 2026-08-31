@@ -11,7 +11,7 @@ import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
   list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
-  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), planRemediation: vi.fn(), confirmRemediation: vi.fn(), remediationPlans: vi.fn(), remediationPlan: vi.fn(), recheckRemediation: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
+  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), planRemediation: vi.fn(), confirmRemediation: vi.fn(), remediationPlans: vi.fn(), remediationPlan: vi.fn(), recheckRemediation: vi.fn(), health: vi.fn(), checkHealth: vi.fn(), setHealthMonitoring: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
 } }));
 
 const host: SshHost = {
@@ -60,6 +60,15 @@ beforeEach(async () => {
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
   vi.mocked(hostApi.remediationPlans).mockResolvedValue({ plans: [], count: 0 });
   vi.mocked(hostApi.remediationPlan).mockResolvedValue({ plan: remediationPlan });
+  vi.mocked(hostApi.health).mockResolvedValue({
+    policy: { enabled: false, cadence: "daily", nextRunAt: null, lastRunAt: null, lastRunStatus: null, revision: 0 },
+    latestSnapshot: null, snapshots: [], incidents: [], openIncidentCount: 0,
+  });
+  vi.mocked(hostApi.checkHealth).mockResolvedValue({ snapshot: {
+    id: "hhs_1", version: 1, source: "manual", status: "healthy", reason: "no_obvious_issue", severity: "healthy",
+    findings: [], checkedActions: ["disk_usage"], diagnosticRunId: "hdr_health", checkedAt: "2026-08-29T00:00:00.000Z",
+  } });
+  vi.mocked(hostApi.setHealthMonitoring).mockResolvedValue({ policy: { enabled: true, cadence: "daily", nextRunAt: "2026-08-30T00:00:00.000Z", lastRunAt: null, lastRunStatus: null, revision: 1 } });
   vi.mocked(hostApi.recheckRemediation).mockResolvedValue({ plan: { ...remediationPlan, status: "outcome_unknown", phase: "finished", lastRecheckedAt: "2026-08-29T00:03:00.000Z", lastRecheckedHealth: { status: "healthy", reason: "website_healthy", statusCodeClass: 2, contentMatched: true, checkedAt: "2026-08-29T00:03:00.000Z" } } });
   vi.mocked(hostApi.planRemediation).mockResolvedValue({ plan: remediationPlan, reused: false });
   vi.mocked(hostApi.confirmRemediation).mockResolvedValue({ plan: { ...remediationPlan, status: "completed", revision: 3, result: { outcome: "restored", changeAttempted: true, verification: "passed", completedChecks: ["preflight_container_running", "preflight_configuration_valid", "service_reloaded", "verification_container_running", "verification_configuration_valid"] } }, reused: false });
@@ -107,6 +116,20 @@ it("keeps complete connection metadata and settings available in Professional mo
   expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
   expect(screen.getByText("File ranges")).toBeTruthy();
   expect(screen.getByText("Governed transfers")).toBeTruthy();
+});
+
+it("gives ordinary users one clear health check and opt-in daily care without technical output", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  renderView();
+
+  expect(await screen.findByText("Device care")).toBeTruthy();
+  expect(screen.getByText("No health record yet")).toBeTruthy();
+  expect(screen.getByText(/never cleans, restarts, or changes the device automatically/i)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+  await waitFor(() => expect(hostApi.checkHealth).toHaveBeenCalledWith(host.id));
+  fireEvent.click(screen.getByRole("button", { name: "Check daily for me" }));
+  await waitFor(() => expect(hostApi.setHealthMonitoring).toHaveBeenCalledWith(host.id, { enabled: true, cadence: "daily" }));
+  expect(screen.queryByText("df -h")).toBeNull();
 });
 
 it("restores a stored desktop credential and reconnects after restart without asking for it again", async () => {

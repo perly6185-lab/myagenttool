@@ -794,6 +794,25 @@ test("My hosts API reuses SSH identity while keeping file-transfer hosts team sc
   assert.deepEqual(transfers.body.transfers, []);
   const foreignTransfers = await call(`/api/hosts/${hostId}/file-transfers`, { token: "tok_a" });
   assert.equal(foreignTransfers.status, 404);
+  const health = await call(`/api/hosts/${hostId}/health`, { token: "tok_b" });
+  assert.equal(health.status, 200);
+  assert.equal(health.body.policy.enabled, false);
+  assert.equal(health.body.latestSnapshot, null);
+  const foreignHealth = await call(`/api/hosts/${hostId}/health`, { token: "tok_a" });
+  assert.equal(foreignHealth.status, 404);
+  const monitoring = await call(`/api/hosts/${hostId}/health/monitoring`, {
+    token: "tok_b", method: "PATCH", body: { enabled: true, cadence: "daily" },
+  });
+  assert.equal(monitoring.status, 200);
+  assert.equal(monitoring.body.policy.enabled, true);
+  const pausedCheck = await call(`/api/hosts/${hostId}/health/check`, { token: "tok_b", method: "POST", body: {} });
+  assert.equal(pausedCheck.status, 200);
+  assert.equal(pausedCheck.body.snapshot.status, "paused");
+  assert.equal(pausedCheck.body.snapshot.reason, "setup_required");
+  assert.equal(JSON.stringify(pausedCheck.body).includes("credential://"), false);
+  assert.equal(testState.hostHealthIncidents.length, 0, "a missing desktop credential is not an outage");
+  const foreignCheck = await call(`/api/hosts/${hostId}/health/check`, { token: "tok_a", method: "POST", body: {} });
+  assert.equal(foreignCheck.status, 404);
   const unverifiedScope = await call(`/api/hosts/${hostId}/file-scopes`, {
     token: "tok_b", method: "POST", body: { label: "Website files", purpose: "site_publish", rootPath: "/srv/www/example" },
   });

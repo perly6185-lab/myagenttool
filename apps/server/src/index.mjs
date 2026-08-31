@@ -420,6 +420,15 @@ if (typeof httpDependencies.applicationHealthSweep === "function") {
   }, 60_000).unref?.();
 }
 
+// My Hosts monitoring is explicitly opt-in and read-only. Policies throttle
+// their own cadence; the minute tick only finds due records. A paused desktop
+// credential is recorded as paused monitoring, never as a host outage.
+if (typeof httpDependencies.hostHealthSweep === "function") {
+  setInterval(() => {
+    httpDependencies.hostHealthSweep().catch(() => {});
+  }, 60_000).unref?.();
+}
+
 // Session keep-alive sweep (login-managed site profiles, e.g. zhihu). Strictly
 // opt-in: without the env gate NO browser is ever spawned from the sweep, and
 // the sweep itself throttles per site by its registry intervalMinutes (default
