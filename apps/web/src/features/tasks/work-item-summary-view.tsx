@@ -28,7 +28,6 @@ import { Button } from "@/components/ui/button";
 import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
 import { Input, Textarea } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
-import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { api } from "@/data/use-console-actions";
 import { localContentApi } from "@/features/local-content/local-content-api";
 import { useConsoleState } from "@/data/use-console-state";
@@ -46,6 +45,15 @@ import {
 } from "./work-item-execution-controller";
 import { WorkItemPlanActualCard } from "./work-item-plan-actual-card";
 import { WorkItemCompletionStatus } from "./work-item-completion-status";
+import { WorkItemCompletedTaskCard, type LocalDeliveryReceipt } from "./work-item-completed-task-card";
+import { WorkItemDeliveryRecoveryAlert, type DeliveryRecoveryAction } from "./work-item-delivery-recovery-alert";
+import {
+  WorkItemFailedResultFiles,
+  WorkItemResultRepairCard,
+  WorkItemResultReportContent,
+  WorkItemResultReview,
+} from "./work-item-result-review";
+import { WorkItemReviewDecisionSection } from "./work-item-review-decision-section";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
@@ -68,9 +76,7 @@ import {
   resultPresentation,
   type WorkItemIntentSummary,
 } from "./work-item-summary-model";
-import { DeliveryDecisionCard } from "./work-item-delivery-decision-card";
 import {
-  DeliverableFileList,
   DeliveryMarkdownDocument,
   deliverableFileKey,
   IMAGE_DELIVERY_EXTENSIONS,
@@ -339,14 +345,6 @@ type MyTemplateDraftPreview = {
     hasDeliveryReport: boolean;
   };
 };
-
-type LocalDeliveryReceipt = {
-  baseBranch: string | null;
-  deliveredCommit: string | null;
-  deliveredAt: string | null;
-};
-
-type DeliveryRecoveryAction = "review_changes" | "refresh";
 
 function localDeliveryFailure(error: unknown, language: "zh" | "en"): { message: string; action: DeliveryRecoveryAction } | null {
   if (!(error instanceof ApiError)) return null;
@@ -2009,10 +2007,7 @@ export function WorkItemSummaryView({
       ) : null}
 
       {actionError && !acceptOpen ? (
-        <div className="rounded-lg border border-destructive/35 bg-destructive/[0.05] px-3 py-2 text-sm" role="alert">
-          <p className="text-destructive">{actionError}</p>
-          {deliveryRecovery ? <Button className="mt-2" size="sm" variant="secondary" onClick={runDeliveryRecovery}>{deliveryRecovery === "review_changes" ? language === "zh" ? "检查当前改动" : "Review current changes" : language === "zh" ? "刷新任务" : "Refresh task"}</Button> : null}
-        </div>
+        <WorkItemDeliveryRecoveryAlert error={actionError} recovery={deliveryRecovery} language={language} onRecover={runDeliveryRecovery} />
       ) : null}
 
       {syncNotice && !(executionActionReceipt && showExecutionReview) ? (
@@ -2221,122 +2216,32 @@ export function WorkItemSummaryView({
       ) : null}
 
       {resultRepairNeeded ? (
-        <section className="rounded-xl border border-destructive/35 bg-destructive/[0.04] p-4" aria-label={language === "zh" ? "结果检查未通过" : "Result checks failed"} data-testid="result-repair-card">
-          <div className="flex items-start gap-3">
-            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-destructive/10 text-destructive"><AlertTriangle className="size-5" aria-hidden /></span>
-            <div className="min-w-0 flex-1">
-              <h4 className="font-semibold">{language === "zh" ? "结果还不能算完成" : "This result is not complete yet"}</h4>
-              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                {language === "zh"
-                  ? "检查发现以下问题。你可以单独创建一个返工任务；原任务、原结果和其他任务都不会被覆盖。"
-                  : "The checks found the following issues. Create a separate repair task without replacing the original task, result, or other work."}
-              </p>
-              {failedResultChecks.length ? (
-                <ul className="mt-3 space-y-1 text-sm">
-                  {failedResultChecks.slice(0, 5).map((check, index) => (
-                    <li key={`${check.kind}-${index}`} className="flex items-start gap-2">
-                      <span aria-hidden>•</span><span>{check.summary}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {canOperate ? (
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Button size="sm" disabled={repairPending} onClick={() => { void createResultRepair(); }}>
-                    <Wrench aria-hidden />
-                    {repairPending
-                      ? (language === "zh" ? "正在创建…" : "Creating…")
-                      : (language === "zh" ? "按检查结果创建返工任务" : "Create repair task from checks")}
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    {language === "zh" ? "只创建任务，不会自动执行。" : "Creates the task without starting it."}
-                  </span>
-                </div>
-              ) : (
-                <p className="mt-3 text-xs text-muted-foreground">
-                  {language === "zh" ? "请让有操作权限的成员创建返工任务。" : "Ask a member with permission to create the repair task."}
-                </p>
-              )}
-              {repairError ? <p className="mt-2 text-sm text-destructive" role="alert">{repairError}</p> : null}
-            </div>
-          </div>
-        </section>
+        <WorkItemResultRepairCard language={language} failedChecks={failedResultChecks} canOperate={canOperate} pending={repairPending} error={repairError} onCreateRepair={() => { void createResultRepair(); }} />
       ) : null}
 
       {status === "completed" ? (
-        <section className="rounded-xl border border-success/35 bg-success/[0.06] p-4" aria-label={copy.completedTitle} role="status">
-          <div className="flex items-start gap-3">
-            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-success/15 text-success"><CheckCircle2 className="size-5" aria-hidden /></span>
-            <div className="min-w-0 flex-1">
-              <h4 className="font-semibold">{copy.completedTitle}</h4>
-              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.completedHint}</p>
-              {completedLocalDeliveryReceipt ? (
-                <div className="mt-3 rounded-lg border border-success/30 bg-background/80 p-3" aria-label={language === "zh" ? "本地交付回执" : "Local delivery receipt"}>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-semibold">{language === "zh" ? "本地交付回执" : "Local delivery receipt"}</p>
-                    <Badge tone="success">{language === "zh" ? "应用成功" : "Applied successfully"}</Badge>
-                  </div>
-                  <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
-                    <div><dt className="text-muted-foreground">{language === "zh" ? "目标分支" : "Target branch"}</dt><dd className="mt-0.5 break-all font-mono text-foreground">{completedLocalDeliveryReceipt.baseBranch ?? (language === "zh" ? "本地基准分支" : "Local base branch")}</dd></div>
-                    <div><dt className="text-muted-foreground">{language === "zh" ? "交付提交" : "Delivered commit"}</dt><dd className="mt-0.5 break-all font-mono text-foreground">{completedLocalDeliveryReceipt.deliveredCommit?.slice(0, 12) ?? (language === "zh" ? "已由本地 Git 确认" : "Confirmed by local Git")}</dd></div>
-                    <div><dt className="text-muted-foreground">{language === "zh" ? "修改范围" : "Change scope"}</dt><dd className="mt-0.5 text-foreground">{language === "zh" ? `${changedFiles.length} 个文件已应用` : `${changedFiles.length} file(s) applied`}</dd></div>
-                    <div><dt className="text-muted-foreground">{language === "zh" ? "验证结果" : "Verification"}</dt><dd className="mt-0.5 text-foreground">{resultVerification?.summary ?? (language === "zh" ? "审核与验证均已通过" : "Review and verification passed")}</dd></div>
-                  </dl>
-                </div>
-              ) : null}
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button size="sm" aria-expanded={resultExpanded} aria-controls={resultSectionId} onClick={() => setResultExpanded((expanded) => !expanded)}>
-                  {resultExpanded ? copy.hideResult : copy.action.completed}
-                  <ChevronDown className={`transition-transform ${resultExpanded ? "rotate-180" : ""}`} aria-hidden />
-                </Button>
-                {onCreateTaskDraft ? <Button size="sm" variant="secondary" onClick={() => onCreateTaskDraft([item.title, item.body?.trim()].filter(Boolean).join("\n"))}>{copy.reuseTask}</Button> : null}
-                {onCreateTaskDraft ? <Button size="sm" variant="secondary" onClick={() => onCreateTaskDraft(language === "zh"
-                  ? `基于“${item.title}”的结果继续：${resultSummary ?? "请说明下一步目标"}`
-                  : `Follow up on “${item.title}”: ${resultSummary ?? "describe the next outcome"}`)}>{copy.createFollowUp}</Button> : null}
-                {!item.myTemplateBinding && canOperate ? item.myTemplateDraft ? (
-                  <span className="inline-flex items-center gap-1.5 rounded-md border border-primary/25 bg-primary/[0.05] px-3 py-1.5 text-sm font-medium text-primary">
-                    <BrainCircuit className="size-4" aria-hidden />
-                    {language === "zh" ? "已保存，等待检查并启用" : "Saved for review and activation"}
-                  </span>
-                ) : (
-                  <Button size="sm" variant="secondary" disabled={templateDraftPending} onClick={() => { void openTemplateDraft(); }}>
-                    <BrainCircuit aria-hidden />
-                    {language === "zh" ? "以后按这种方式处理" : "Use this approach next time"}
-                  </Button>
-                ) : null}
-                {onOpenTaskCenter ? <Button size="sm" variant="secondary" onClick={onOpenTaskCenter}>{copy.taskCenter}</Button> : null}
-              </div>
-            </div>
-          </div>
-          {item.myTemplateBinding && item.status === "done" ? (
-            <div className="mt-4 rounded-lg border border-primary/25 bg-background/75 p-3" aria-label={language === "zh" ? "这次结果符合预期吗？" : "Did this result meet your expectations?"}>
-              <h5 className="text-sm font-semibold">{language === "zh" ? "这次结果符合预期吗？" : "Did this result meet your expectations?"}</h5>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {language === "zh" ? "只评价实际结果。电脑离线、权限或运行失败不会被算成模板问题。" : "Rate only the actual result. Offline computers, permissions, and run failures are not treated as template problems."}
-              </p>
-              {item.myTemplateOutcomeFeedback && !templateOutcomeEditing ? (
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Badge tone={item.myTemplateOutcomeFeedback.outcome === "met_expectations" ? "success" : item.myTemplateOutcomeFeedback.outcome === "wrong_result" ? "danger" : "warning"}>
-                    {item.myTemplateOutcomeFeedback.outcome === "met_expectations"
-                      ? (language === "zh" ? "符合预期" : "Met expectations")
-                      : item.myTemplateOutcomeFeedback.outcome === "wrong_result"
-                        ? (language === "zh" ? "结果类型不对" : "Wrong result type")
-                        : (language === "zh" ? "内容需要调整" : "Content needs adjustment")}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">{language === "zh" ? "反馈已记录" : "Feedback recorded"}</span>
-                  <Button size="sm" variant="ghost" onClick={() => setTemplateOutcomeEditing(true)}>{language === "zh" ? "修改反馈" : "Change feedback"}</Button>
-                </div>
-              ) : (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" disabled={templateOutcomePending} onClick={() => { void recordTemplateOutcome("met_expectations"); }}><CheckCircle2 />{language === "zh" ? "符合预期" : "Met expectations"}</Button>
-                  <Button size="sm" variant="secondary" disabled={templateOutcomePending} onClick={() => { void recordTemplateOutcome("wrong_result"); }}>{language === "zh" ? "结果类型不对" : "Wrong result type"}</Button>
-                  <Button size="sm" variant="secondary" disabled={templateOutcomePending} onClick={() => { void recordTemplateOutcome("needs_quality_adjustment"); }}>{language === "zh" ? "内容需要调整" : "Content needs adjustment"}</Button>
-                </div>
-              )}
-              {templateOutcomeError ? <p className="mt-2 text-sm text-destructive" role="alert">{templateOutcomeError}</p> : null}
-            </div>
-          ) : null}
-        </section>
+        <WorkItemCompletedTaskCard
+          item={item}
+          language={language}
+          copy={copy}
+          receipt={completedLocalDeliveryReceipt}
+          changedFileCount={changedFiles.length}
+          verificationSummary={resultVerification?.summary ?? null}
+          resultExpanded={resultExpanded}
+          resultSectionId={resultSectionId}
+          resultSummary={resultSummary}
+          canOperate={canOperate}
+          templateDraftPending={templateDraftPending}
+          templateOutcomeEditing={templateOutcomeEditing}
+          templateOutcomePending={templateOutcomePending}
+          templateOutcomeError={templateOutcomeError}
+          onToggleResult={() => setResultExpanded((expanded) => !expanded)}
+          onCreateTaskDraft={onCreateTaskDraft}
+          onOpenTemplateDraft={() => { void openTemplateDraft(); }}
+          onEditTemplateOutcome={() => setTemplateOutcomeEditing(true)}
+          onRecordTemplateOutcome={(value) => { void recordTemplateOutcome(value); }}
+          onOpenTaskCenter={onOpenTaskCenter}
+        />
       ) : null}
 
       {failed ? (
@@ -2348,264 +2253,83 @@ export function WorkItemSummaryView({
       ) : null}
 
       {failed && resultFileEntries.length ? (
-        <section className="rounded-xl border border-border bg-background/70 p-4" aria-label={copy.deliverableFiles}>
-          <h4 className="text-sm font-semibold">{copy.deliverableFiles}</h4>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {language === "zh"
-              ? "本次执行虽未正常结束，但已产生以下文件，可以直接查看。"
-              : "The run did not finish normally, but these files were produced and remain available to review."}
-          </p>
-          <div className="mt-3">
-            <DeliverableFileList
-              entries={resultFileEntries}
-              copy={copy}
-              openingKey={openingResultFileKey}
-              error={resultPreviewFile ? null : resultFileError}
-              onOpen={(file) => void openResultFile(file)}
-            />
-          </div>
-        </section>
+        <WorkItemFailedResultFiles language={language} copy={copy} entries={resultFileEntries} openingKey={openingResultFileKey} error={resultPreviewFile ? null : resultFileError} onOpen={(file) => { void openResultFile(file); }} />
       ) : null}
 
       {(status === "ready_for_review" || status === "completed") && resultExpanded ? (
-        <section id={resultSectionId} className="scroll-mt-4 rounded-xl border border-success/30 bg-success/[0.035] p-4" aria-labelledby={`${resultSectionId}-title`}>
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h4 id={`${resultSectionId}-title`} className="text-sm font-semibold">{presentation.title}</h4>
-              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{presentation.hint}</p>
-            </div>
-            <Button size="sm" variant="secondary" disabled={!fullResult} onClick={() => setReportOpen(true)}>{copy.fullReport}</Button>
-          </div>
-          {outcome?.status === "missing" ? (
-            <div className="mt-3 rounded-lg border border-destructive/35 bg-destructive/[0.05] px-3 py-2.5 text-sm" role="alert">
-              <p className="font-semibold">{language === "zh" ? "结果暂时无法读取" : "The result is temporarily unavailable"}</p>
-              <p className="mt-1 text-muted-foreground">{language === "zh" ? "系统记录到 AI 已结束，但没有取得可审核的结果。请重试或查看专业详情，在结果恢复前不能确认完成。" : "AI has finished, but no reviewable result was returned. Retry or open expert details; completion stays disabled until the result is restored."}</p>
-            </div>
-          ) : resultSummary ? (
-            <div className="mt-3 rounded-lg border border-primary/25 bg-background/80 px-4 py-3">
-              <p className="text-xs font-medium text-muted-foreground">{language === "zh" ? "一句话结论" : "At a glance"}</p>
-              <p className="mt-1 text-base font-medium leading-relaxed">{resultSummary}</p>
-            </div>
-          ) : null}
-          {outcome?.highlights?.length ? (
-            <div className="mt-3">
-              <p className="text-xs font-medium text-muted-foreground">{language === "zh" ? "关键结果" : "Key results"}</p>
-              <ul className="mt-1.5 grid gap-2 sm:grid-cols-2">
-                {outcome.highlights.map((highlight) => <li key={highlight} className="rounded-lg bg-background/70 px-3 py-2 text-sm">{highlight}</li>)}
-              </ul>
-            </div>
-          ) : null}
-          {outcome?.warnings?.length ? (
-            <div className="mt-3 rounded-lg border border-warning/35 bg-warning/[0.06] px-3 py-2.5">
-              <p className="text-xs font-semibold text-warning">{language === "zh" ? "需要注意" : "Needs attention"}</p>
-              <ul className="mt-1.5 list-disc space-y-1 pl-5 text-sm">
-                {outcome.warnings.map((warning) => <li key={warning}>{warning}</li>)}
-              </ul>
-            </div>
-          ) : null}
-          <div className="mt-3">
-            <DeliveryDecisionCard
-              decision={deliveryDecision}
-              copy={copy}
-              scopeLabel={presentation.completedScope}
-              actionPreview={deliveryEvidence?.actionPreview ?? null}
-              officeBatchResultId={officeBatchResultId}
-              language={language}
-              onViewChanges={!usesProjectedReviewActions && deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
-              onRerunVerification={!usesProjectedReviewActions && canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
-              onAskAiToFix={!usesProjectedReviewActions && canAskAiToFix ? askAiToFix : undefined}
-              onCreatePullRequest={!usesProjectedReviewActions && deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
-              actionDisabled={Boolean(actionPending) || executionActionLocked}
-              verificationPending={actionPending === "reverify"}
-            />
-          </div>
-          {observability?.delivery ? (
-            <div className={`mt-3 rounded-lg border px-3 py-3 ${deliveryReview?.verdict === "approved" ? "border-success/35 bg-success/[0.06]" : deliveryReview?.verdict === "changes_requested" ? "border-destructive/35 bg-destructive/[0.05]" : "border-warning/35 bg-warning/[0.05]"}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Bot className="size-4 text-primary" aria-hidden />
-                  <p className="text-sm font-semibold">{copy.aiReviewTitle}</p>
-                  <Badge tone={deliveryReview?.verdict === "approved" ? "success" : deliveryReview?.verdict === "changes_requested" ? "danger" : "neutral"}>
-                    {deliveryReview?.verdict === "approved"
-                      ? language === "zh" ? "通过" : "Passed"
-                      : deliveryReview?.verdict === "changes_requested"
-                        ? language === "zh" ? "需修改" : "Changes needed"
-                        : deliveryAiReview?.status === "running"
-                          ? language === "zh" ? "审查中" : "Reviewing"
-                          : language === "zh" ? "等待审查" : "Pending"}
-                  </Badge>
-                </div>
-                {deliveryReview?.verdict === "changes_requested" && reviewFeedback ? (
-                  <Button size="sm" disabled={Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest(reviewFeedback)}>
-                    <RefreshCw aria-hidden />{copy.sendAiReviewBack}
-                  </Button>
-                ) : null}
-              </div>
-              <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
-                {deliveryReview?.summary
-                  ?? deliveryAiReview?.summary
-                  ?? (deliveryReview?.verdict === "approved"
-                    ? copy.aiReviewApproved
-                    : deliveryReview?.verdict === "changes_requested"
-                      ? copy.aiReviewChanges
-                      : ["failed", "unavailable"].includes(deliveryAiReview?.status ?? "")
-                        ? copy.aiReviewUnavailable
-                        : copy.aiReviewPending)}
-              </p>
-              {reviewFindings.length ? (
-                <ul className="mt-3 space-y-2">
-                  {reviewFindings.slice(0, 8).map((finding, index) => (
-                    <li key={`${finding.path ?? "finding"}-${finding.line ?? 0}-${index}`} className="rounded-md bg-background/75 px-3 py-2 text-sm">
-                      <p className="font-medium [overflow-wrap:anywhere]">
-                        {finding.path ?? (language === "zh" ? "代码" : "Code")}{finding.line ? `:${finding.line}` : ""}
-                        {finding.severity ? <span className="ml-2 text-xs uppercase text-muted-foreground">{finding.severity}</span> : null}
-                      </p>
-                      <p className="mt-1 leading-relaxed text-foreground/90">{finding.body}</p>
-                      {finding.suggestion ? <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{language === "zh" ? "修复建议" : "Suggested fix"}: {finding.suggestion}</p> : null}
-                    </li>
-                  ))}
-                </ul>
-              ) : deliveryReview?.verdict === "approved" ? <p className="mt-2 text-xs text-muted-foreground">{copy.aiReviewNoFindings}</p> : null}
-            </div>
-          ) : null}
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg bg-background/70 px-3 py-2 text-sm">
-              <p className="text-xs text-muted-foreground">{presentation.originalNote}</p>
-              <p className="mt-1 whitespace-pre-wrap leading-relaxed">{resultSummary || presentation.noSummary}</p>
-            </div>
-            <div className="rounded-lg bg-background/70 px-3 py-2 text-sm">
-              <p className="text-xs text-muted-foreground">{resultVerification ? copy.verificationEvidence : copy.acceptanceResult}</p>
-              <p className="mt-1">{resultVerification
-                ? resultVerification.summary ?? (resultVerification.passed ? copy.aiReviewApproved : copy.aiReviewChanges)
-                : reviewAcceptanceCriteria.length || item.acceptanceResults?.length
-                  ? `${acceptancePassed} ${copy.passed} · ${Math.max(0, acceptanceNeedsReview)} ${copy.needsReview}`
-                  : copy.noAcceptanceResult}</p>
-            </div>
-          </div>
-          <div className="mt-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-muted-foreground">{copy.deliverableFiles}</p>
-              {changedFiles.length && deliveryWorktreeId ? (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => {
-                    if (onOpenDeliveryChanges) onOpenDeliveryChanges(item.projectId, deliveryWorktreeId);
-                    else onOpenExpert("process");
-                  }}
-                >
-                  <FolderOpen aria-hidden />{t("taskDelivery.review")}
-                </Button>
-              ) : null}
-            </div>
-            <DeliverableFileList
-              entries={resultFileEntries}
-              copy={copy}
-              openingKey={openingResultFileKey}
-              error={resultPreviewFile ? null : resultFileError}
-              limit={8}
-              onOpen={(file) => void openResultFile(file)}
-            />
-          </div>
-          {observability?.outcomeHistory?.length ? (
-            <details className="mt-3 rounded-lg border border-border bg-background/60 px-3 py-2.5">
-              <summary className="cursor-pointer text-sm font-medium">
-                {language === "zh" ? `历史结果（${observability.outcomeHistory.length}）` : `Previous results (${observability.outcomeHistory.length})`}
-              </summary>
-              <ol className="mt-2 space-y-2">
-                {observability.outcomeHistory.map((previous) => (
-                  <li key={`${previous.invocationId ?? "result"}-${previous.version}`} className="rounded-md bg-muted/40 px-3 py-2 text-sm">
-                    <p className="text-xs font-medium text-muted-foreground">
-                      {language === "zh" ? `第 ${previous.version} 版` : `Version ${previous.version}`}
-                      {previous.supersededAt ? ` · ${new Date(previous.supersededAt).toLocaleString()}` : ""}
-                    </p>
-                    <p className="mt-1 leading-relaxed">{previous.summary ?? (language === "zh" ? "该版本没有可读摘要" : "No readable summary for this version")}</p>
-                    {previous.supersededByFeedback ? <p className="mt-1 text-xs text-muted-foreground">{language === "zh" ? "修改要求" : "Requested change"}: {previous.supersededByFeedback}</p> : null}
-                  </li>
-                ))}
-              </ol>
-            </details>
-          ) : null}
-        </section>
+        <WorkItemResultReview
+          item={item}
+          language={language}
+          copy={copy}
+          resultSectionId={resultSectionId}
+          presentation={presentation}
+          outcome={outcome}
+          resultSummary={resultSummary}
+          fullResult={fullResult}
+          deliveryDecision={deliveryDecision}
+          actionPreview={deliveryEvidence?.actionPreview ?? null}
+          officeBatchResultId={officeBatchResultId}
+          deliveryReview={deliveryReview}
+          deliveryAiReview={deliveryAiReview}
+          hasDelivery={Boolean(observability?.delivery)}
+          reviewFindings={reviewFindings}
+          reviewFeedback={reviewFeedback}
+          resultVerification={resultVerification}
+          acceptanceCriteriaCount={reviewAcceptanceCriteria.length}
+          acceptancePassed={acceptancePassed}
+          acceptanceNeedsReview={acceptanceNeedsReview}
+          changedFileCount={changedFiles.length}
+          deliveryWorktreeId={deliveryWorktreeId}
+          reviewChangesLabel={t("taskDelivery.review")}
+          resultFileEntries={resultFileEntries}
+          openingFileKey={openingResultFileKey}
+          fileError={resultPreviewFile ? null : resultFileError}
+          outcomeHistory={observability?.outcomeHistory ?? []}
+          actionDisabled={Boolean(actionPending) || executionActionLocked}
+          verificationPending={actionPending === "reverify"}
+          onOpenFullReport={() => setReportOpen(true)}
+          onViewProjectedChanges={!usesProjectedReviewActions && deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
+          onRerunVerification={!usesProjectedReviewActions && canRerunVerification ? () => { void rerunDeliveryVerification(); } : undefined}
+          onAskAiToFix={!usesProjectedReviewActions && canAskAiToFix ? askAiToFix : undefined}
+          onCreatePullRequest={!usesProjectedReviewActions && deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
+          onSendReviewFeedback={(feedback) => { void sendChangeRequest(feedback); }}
+          onReviewChanges={() => {
+            if (onOpenDeliveryChanges && deliveryWorktreeId) onOpenDeliveryChanges(item.projectId, deliveryWorktreeId);
+            else onOpenExpert("process");
+          }}
+          onOpenFile={(file) => { void openResultFile(file); }}
+        />
       ) : null}
 
       {status === "ready_for_review" && resultExpanded ? (
-        <section className="rounded-xl border border-primary/35 bg-primary/[0.045] p-4" aria-labelledby={`${resultSectionId}-decision-title`}>
-          <h4 id={`${resultSectionId}-decision-title`} className="text-sm font-semibold">{copy.reviewDecisionTitle}</h4>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.reviewDecisionHint}</p>
-          {!executionContractReady ? (
-            <div className="mt-3 rounded-lg border border-warning/40 bg-warning/[0.08] px-3 py-2.5 text-sm" role="alert">
-              <p className="font-semibold">{language === "zh" ? "本次结果缺少事先确认的完成要求，暂不能确认通过" : "This result has no pre-confirmed completion requirements and cannot be approved"}</p>
-              <p className="mt-1 leading-relaxed text-muted-foreground">
-                {executionContractDefined
-                  ? language === "zh"
-                    ? "完成标准和检查步骤是在这次结果产生后才建立的，因此只能用于下一轮执行。请让 AI 重新执行；新结果才可按这份要求确认。"
-                    : "The criteria and SOP were established after this result, so they apply only to the next run. Rerun the task; only the new result can be reviewed against this plan."
-                  : language === "zh"
-                    ? "完成标准和检查步骤必须在 AI 开始前确定。本次历史运行缺少完整要求，请先补全并重新执行；系统不会在确认结果时倒推标准。"
-                    : "Acceptance criteria and the SOP must be confirmed before AI starts. This historical run has no complete execution contract; establish the plan and rerun. The system will not infer criteria during review."}
-              </p>
-              {!executionContractDefined ? <Button className="mt-2" size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void prepareReviewExecutionPlan()}>{language === "zh" ? "建立重新执行方案" : "Prepare rerun plan"}</Button> : null}
-            </div>
-          ) : null}
-          <div className="mt-3 grid gap-3 lg:grid-cols-2">
-            <div className={`rounded-lg border p-3 ${deliveryDecision.state !== "ready" ? "border-primary/40 bg-primary/[0.05]" : "border-border bg-background/70"}`}>
-              <div className="flex flex-wrap items-center gap-2">
-                <RefreshCw className="size-4 text-primary" aria-hidden />
-                <p className="text-sm font-semibold">{copy.requestChanges}</p>
-                {deliveryDecision.state !== "ready" ? <Badge tone="running">{language === "zh" ? "建议" : "Recommended"}</Badge> : null}
-              </div>
-              <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionEffect}</p>
-              <p className="mt-1 text-sm leading-relaxed">{deliveryDecision.revisionEffect}</p>
-              <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionRisk}</p>
-              <p className="mt-1 text-sm leading-relaxed">{deliveryDecision.revisionRisk}</p>
-            </div>
-            <div className={`rounded-lg border p-3 ${deliveryDecision.state === "ready" ? "border-success/40 bg-success/[0.05]" : "border-border bg-background/70"}`}>
-              <div className="flex flex-wrap items-center gap-2">
-                <CheckCircle2 className="size-4 text-success" aria-hidden />
-                <p className="text-sm font-semibold">{acceptActionLabel}</p>
-                {deliveryDecision.state === "ready" ? <Badge tone="success">{language === "zh" ? "建议" : "Recommended"}</Badge> : null}
-              </div>
-              <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionEffect}</p>
-              <p className="mt-1 text-sm leading-relaxed">{confirmActionEffect}</p>
-              <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionRisk}</p>
-              <p className="mt-1 text-sm leading-relaxed">{confirmActionRisk}</p>
-            </div>
-          </div>
-          {observability?.delivery && deliveryReview?.verdict !== "approved" ? (
-            <p className="mt-3 rounded-lg bg-warning/[0.08] px-3 py-2 text-sm text-foreground" role="status">
-              {deliveryAiReview?.status === "queued" || deliveryAiReview?.status === "running"
-                ? copy.aiReviewPending
-                : deliveryReview?.verdict === "changes_requested"
-                  ? copy.aiReviewChanges
-                  : ["failed", "unavailable"].includes(deliveryAiReview?.status ?? "")
-                    ? copy.aiReviewUnavailable
-                    : copy.deliveryReviewRequired}
-            </p>
-          ) : null}
-          {changeRequestOpen ? (
-            <div className="mt-3 rounded-lg border border-border bg-background p-3">
-              <p className="mb-2 text-sm font-semibold">{feedbackMode === "follow_up" ? language === "zh" ? "继续追问 AI" : "Ask AI a follow-up" : copy.requestChanges}</p>
-              <Textarea rows={3} autoFocus value={changeRequest} placeholder={feedbackMode === "follow_up" ? language === "zh" ? "例如：第二个结论依据是什么？请补充原文证据。" : "For example: What supports the second conclusion? Add source evidence." : copy.changePlaceholder} onChange={(event) => setChangeRequest(event.target.value)} />
-              <div className="mt-2 flex flex-wrap justify-end gap-2">
-                <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => { setChangeRequestOpen(false); setChangeRequest(""); }}>{language === "zh" ? "取消" : "Cancel"}</Button>
-                <Button disabled={!changeRequest.trim() || Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest()}>{actionPending === "changes" ? copy.sendingChanges : feedbackMode === "follow_up" ? language === "zh" ? "提交追问" : "Send follow-up" : copy.sendChanges}</Button>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-4 grid gap-2 sm:flex sm:justify-end">
-              <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => void stopDelivery()}>{language === "zh" ? "停止交付" : "Stop delivery"}</Button>
-              <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("follow_up"); setChangeRequestOpen(true); }}><MessageSquare aria-hidden />{language === "zh" ? "继续追问" : "Ask follow-up"}</Button>
-              <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("revision"); setChangeRequestOpen(true); }}>{copy.requestChanges}</Button>
-              <Button
-                disabled={!executionContractReady || Boolean(actionPending) || !canConfirmProjectedDelivery || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
-                onClick={() => { setCompletionWriteback("local_only"); setAcceptOpen(true); }}
-              >
-                <CheckCircle2 aria-hidden />{acceptActionLabel}
-              </Button>
-            </div>
-          )}
-        </section>
+        <WorkItemReviewDecisionSection
+          resultSectionId={resultSectionId}
+          language={language}
+          copy={copy}
+          deliveryDecision={deliveryDecision}
+          executionContractReady={executionContractReady}
+          executionContractDefined={executionContractDefined}
+          hasDelivery={Boolean(observability?.delivery)}
+          reviewVerdict={deliveryReview?.verdict ?? null}
+          aiReviewStatus={deliveryAiReview?.status ?? null}
+          acceptActionLabel={acceptActionLabel}
+          confirmActionEffect={confirmActionEffect}
+          confirmActionRisk={confirmActionRisk}
+          changeRequestOpen={changeRequestOpen}
+          feedbackMode={feedbackMode}
+          changeRequest={changeRequest}
+          actionPending={actionPending}
+          executionActionLocked={executionActionLocked}
+          canConfirmDelivery={canConfirmProjectedDelivery}
+          onPrepareExecutionPlan={() => { void prepareReviewExecutionPlan(); }}
+          onChangeRequest={setChangeRequest}
+          onCancelChangeRequest={() => { setChangeRequestOpen(false); setChangeRequest(""); }}
+          onSendChangeRequest={() => { void sendChangeRequest(); }}
+          onStopDelivery={() => { void stopDelivery(); }}
+          onOpenFollowUp={() => { setFeedbackMode("follow_up"); setChangeRequestOpen(true); }}
+          onOpenRevision={() => { setFeedbackMode("revision"); setChangeRequestOpen(true); }}
+          onAccept={() => { setCompletionWriteback("local_only"); setAcceptOpen(true); }}
+        />
       ) : null}
 
       <div className="grid gap-3 lg:grid-cols-2">
@@ -3087,84 +2811,33 @@ export function WorkItemSummaryView({
           </div>
         )}
       >
-        <div className="space-y-4">
-          <DeliveryDecisionCard
-            decision={deliveryDecision}
-            copy={copy}
-            actionPreview={deliveryEvidence?.actionPreview ?? null}
-            language={language}
-            onViewChanges={canViewProjectedChanges && deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
-            onRerunVerification={canRerunProjectedVerification ? () => void rerunDeliveryVerification() : undefined}
-            onAskAiToFix={canRequestProjectedAiFix ? askAiToFix : undefined}
-            onCreatePullRequest={canOpenProjectedPullRequest ? openPullRequestConfirmation : undefined}
-            actionDisabled={Boolean(actionPending)}
-            verificationPending={actionPending === "reverify"}
-          />
-
-
-          <details className="rounded-lg border border-primary/25 bg-primary/[0.035] p-4">
-            <summary className="cursor-pointer text-sm font-semibold">{language === "zh" ? "查看动作影响" : "Available actions and impact"}</summary>
-            <div className="mt-3 grid gap-3 lg:grid-cols-2">
-              <div className="rounded-md bg-background/75 px-3 py-2.5">
-                <p className="text-sm font-semibold">{copy.requestChanges}</p>
-                <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionEffect}</p>
-                <p className="mt-1 text-sm leading-relaxed">{deliveryDecision.revisionEffect}</p>
-                <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionRisk}</p>
-                <p className="mt-1 text-sm leading-relaxed">{deliveryDecision.revisionRisk}</p>
-              </div>
-              <div className="rounded-md bg-background/75 px-3 py-2.5">
-                <p className="text-sm font-semibold">{acceptActionLabel}</p>
-                <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionEffect}</p>
-                <p className="mt-1 text-sm leading-relaxed">{confirmActionEffect}</p>
-                <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionRisk}</p>
-                <p className="mt-1 text-sm leading-relaxed">{confirmActionRisk}</p>
-              </div>
-            </div>
-          </details>
-
-          <section className={`rounded-lg border p-4 ${deliveryReview?.verdict === "approved" ? "border-success/35 bg-success/[0.06]" : deliveryReview?.verdict === "changes_requested" ? "border-destructive/35 bg-destructive/[0.05]" : "border-border bg-muted/30"}`}>
-            <div className="flex flex-wrap items-center gap-2">
-              <Bot className="size-4 text-primary" aria-hidden />
-              <h3 className="text-sm font-semibold">{copy.aiReviewTitle}</h3>
-              <Badge tone={deliveryReview?.verdict === "approved" ? "success" : deliveryReview?.verdict === "changes_requested" ? "danger" : "neutral"}>
-                {deliveryReview?.verdict === "approved"
-                  ? language === "zh" ? "通过" : "Passed"
-                  : deliveryReview?.verdict === "changes_requested"
-                    ? language === "zh" ? "需修改" : "Changes needed"
-                    : language === "zh" ? "等待复核" : "Pending"}
-              </Badge>
-            </div>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{deliveryReview?.summary ?? deliveryAiReview?.summary ?? copy.aiReviewPending}</p>
-          </section>
-
-          <section className="rounded-lg border border-border bg-background/70 p-4">
-            <h3 className="text-sm font-semibold">{copy.originalAiNote}</h3>
-            {fullResult ? <MarkdownBlock text={fullResult} className="mt-2" /> : <p className="mt-2 text-sm text-muted-foreground">{copy.noDeliverableSummary}</p>}
-          </section>
-
-          <section className="rounded-lg border border-border bg-background/70 p-4">
-            <h3 className="text-sm font-semibold">{resultVerification ? copy.verificationEvidence : copy.acceptanceResult}</h3>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
-              {resultVerification?.summary
-                ?? (resultVerification?.passed ? copy.aiReviewApproved : null)
-                ?? (reviewAcceptanceCriteria.length || item.acceptanceResults?.length
-                  ? `${acceptancePassed} ${copy.passed} · ${Math.max(0, acceptanceNeedsReview)} ${copy.needsReview}`
-                  : copy.noAcceptanceResult)}
-            </p>
-          </section>
-
-          <section className="rounded-lg border border-border bg-background/70 p-4">
-            <h3 className="text-sm font-semibold">{copy.deliverableFiles}</h3>
-            <DeliverableFileList
-              entries={resultFileEntries}
-              copy={copy}
-              openingKey={openingResultFileKey}
-              error={resultPreviewFile ? null : resultFileError}
-              onOpen={(file) => void openResultFile(file)}
-            />
-          </section>
-
-        </div>
+        <WorkItemResultReportContent
+          language={language}
+          copy={copy}
+          deliveryDecision={deliveryDecision}
+          actionPreview={deliveryEvidence?.actionPreview ?? null}
+          deliveryReview={deliveryReview}
+          deliveryAiReview={deliveryAiReview}
+          acceptActionLabel={acceptActionLabel}
+          confirmActionEffect={confirmActionEffect}
+          confirmActionRisk={confirmActionRisk}
+          fullResult={fullResult}
+          resultVerification={resultVerification}
+          acceptanceCriteriaCount={reviewAcceptanceCriteria.length}
+          acceptanceResultsCount={item.acceptanceResults?.length ?? 0}
+          acceptancePassed={acceptancePassed}
+          acceptanceNeedsReview={acceptanceNeedsReview}
+          resultFileEntries={resultFileEntries}
+          openingFileKey={openingResultFileKey}
+          fileError={resultPreviewFile ? null : resultFileError}
+          actionDisabled={Boolean(actionPending)}
+          verificationPending={actionPending === "reverify"}
+          onViewChanges={canViewProjectedChanges && deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
+          onRerunVerification={canRerunProjectedVerification ? () => { void rerunDeliveryVerification(); } : undefined}
+          onAskAiToFix={canRequestProjectedAiFix ? askAiToFix : undefined}
+          onCreatePullRequest={canOpenProjectedPullRequest ? openPullRequestConfirmation : undefined}
+          onOpenFile={(file) => { void openResultFile(file); }}
+        />
       </Modal>
       <Modal
         open={retryOpen}
@@ -3207,10 +2880,7 @@ export function WorkItemSummaryView({
             </fieldset>
           ) : null}
           {actionError ? (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/[0.04] p-3" role="alert">
-              <p className="text-sm text-destructive">{actionError}</p>
-              {deliveryRecovery ? <Button className="mt-2" size="sm" variant="secondary" onClick={runDeliveryRecovery}>{deliveryRecovery === "review_changes" ? language === "zh" ? "检查当前改动" : "Review current changes" : language === "zh" ? "刷新任务" : "Refresh task"}</Button> : null}
-            </div>
+            <WorkItemDeliveryRecoveryAlert error={actionError} recovery={deliveryRecovery} language={language} compact onRecover={runDeliveryRecovery} />
           ) : null}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" disabled={actionPending === "complete"} onClick={() => setAcceptOpen(false)}>{language === "zh" ? "取消" : "Cancel"}</Button>
