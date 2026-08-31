@@ -489,6 +489,263 @@ test("creates a Home task, reviews its plan, then schedules AI from simple detai
   expect(scheduled).toBe(true);
 });
 
+for (const fixture of [
+  {
+    name: "desktop English",
+    locale: "en-US" as const,
+    viewport: { width: 1366, height: 768 },
+    dialog: "Confirm AI start",
+    preparedAction: "Review and start AI",
+    cancel: "Not now",
+    confirm: "Confirm and start AI",
+    confirming: "Confirming…",
+    accepted: "AI accepted the task and is queued",
+    goal: "Prepare the weekly customer update",
+    criterion: "Publish a customer-ready weekly update",
+    verification: "Review the update for accuracy and plain language",
+  },
+  {
+    name: "desktop Chinese",
+    locale: "zh-CN" as const,
+    viewport: { width: 1366, height: 768 },
+    dialog: "确认让 AI 开始",
+    preparedAction: "核对并让 AI 开始",
+    cancel: "暂不开始",
+    confirm: "确认并让 AI 开始",
+    confirming: "正在确认…",
+    accepted: "AI 已接单，正在排队",
+    goal: "整理每周客户进展",
+    criterion: "形成可直接发送给客户的周报",
+    verification: "检查事实准确且表达清楚",
+  },
+  {
+    name: "390px English",
+    locale: "en-US" as const,
+    viewport: { width: 390, height: 844 },
+    dialog: "Confirm AI start",
+    preparedAction: "Review and start AI",
+    cancel: "Not now",
+    confirm: "Confirm and start AI",
+    confirming: "Confirming…",
+    accepted: "AI accepted the task and is queued",
+    goal: "Prepare the weekly customer update",
+    criterion: "Publish a customer-ready weekly update",
+    verification: "Review the update for accuracy and plain language",
+  },
+  {
+    name: "390px Chinese",
+    locale: "zh-CN" as const,
+    viewport: { width: 390, height: 844 },
+    dialog: "确认让 AI 开始",
+    preparedAction: "核对并让 AI 开始",
+    cancel: "暂不开始",
+    confirm: "确认并让 AI 开始",
+    confirming: "正在确认…",
+    accepted: "AI 已接单，正在排队",
+    goal: "整理每周客户进展",
+    criterion: "形成可直接发送给客户的周报",
+    verification: "检查事实准确且表达清楚",
+  },
+]) {
+  test(`uses one explicit, durable AI-start confirmation on ${fixture.name}`, async ({ page }) => {
+    await page.setViewportSize(fixture.viewport);
+    let prepareCalls = 0;
+    let confirmCalls = 0;
+    let resolveConfirmStarted!: () => void;
+    const confirmStarted = new Promise<void>((resolve) => { resolveConfirmStarted = resolve; });
+    const confirmGate: { release: (() => void) | null } = { release: null };
+    let workItem: Record<string, unknown> = {
+      id: "lwi_confirmation",
+      localRef: "LOCAL-1751",
+      projectId: "project-1",
+      title: fixture.goal,
+      body: fixture.locale === "zh-CN" ? "根据本周进展整理客户更新。" : "Summarize this week's progress for the customer.",
+      type: "task",
+      priority: "p1",
+      status: "backlog",
+      state: "open",
+      labels: [],
+      assigneeIds: [],
+      acceptanceCriteria: [],
+      verificationSop: [],
+      executionContractGate: {
+        ready: false,
+        missing: ["acceptance_criteria", "verification_sop", "confirmation"],
+        source: null,
+        confirmedAt: null,
+      },
+      waitingOn: "none",
+      plannedDate: null,
+      dueDate: null,
+      executionState: "unclaimed",
+      executionBindings: [],
+      revision: 1,
+      archivedAt: null,
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    };
+
+    await page.route("http://127.0.0.1:5001/api/**", async (route) => {
+      const request = route.request();
+      const pathname = new URL(request.url()).pathname;
+      if (pathname === "/api/state") return route.fulfill({ json: READY_STATE });
+      if (/^\/api\/projects\/[^/]+\/auto-run-readiness$/.test(pathname)) {
+        return route.fulfill({ json: { readiness: { ready: true, checks: [] } } });
+      }
+      if (pathname === "/api/work-items/assist/draft" && request.method() === "POST") {
+        return route.fulfill({ json: {
+          draft: {
+            taskUnderstanding: fixture.goal,
+            acceptanceCriteria: [fixture.criterion],
+            verificationSop: [fixture.verification],
+            risks: [],
+            evidence: {},
+            templateMatch: { state: "missing", candidates: [], selected: null },
+          },
+        } });
+      }
+      if (pathname === "/api/work-items/lwi_confirmation/execution-contract/prepare" && request.method() === "POST") {
+        prepareCalls += 1;
+        const body = request.postDataJSON() as { draftOverride?: { acceptanceCriteria?: string[]; verificationSop?: string[] } };
+        workItem = {
+          ...workItem,
+          acceptanceCriteria: body.draftOverride?.acceptanceCriteria ?? [fixture.criterion],
+          verificationSop: body.draftOverride?.verificationSop ?? [fixture.verification],
+          executionContractSource: "assisted",
+          executionContractGate: { ready: false, missing: ["confirmation"], source: "assisted", confirmedAt: null },
+          revision: Number(workItem.revision) + 1,
+        };
+        return route.fulfill({ json: { workItem } });
+      }
+      if (pathname === "/api/work-items/lwi_confirmation/execution-contract/confirm" && request.method() === "POST") {
+        confirmCalls += 1;
+        resolveConfirmStarted();
+        await new Promise<void>((resolve) => { confirmGate.release = resolve; });
+        workItem = {
+          ...workItem,
+          executionPolicy: "auto",
+          status: "ready",
+          waitingOn: "ai",
+          executionState: "queued",
+          executionContractConfirmedAt: "2026-08-06T00:01:00.000Z",
+          executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: "2026-08-06T00:01:00.000Z" },
+          executionStartReceipt: {
+            schemaVersion: 1,
+            id: "wsr_1751",
+            status: "queued",
+            requestedAt: "2026-08-06T00:01:00.000Z",
+            requestedBy: "usr_local",
+            confirmedRevision: Number(workItem.revision),
+            contractDigest: "digest-1751",
+            updatedAt: "2026-08-06T00:01:00.000Z",
+            startedAt: null,
+            executionKind: null,
+            targetId: null,
+            agentId: null,
+            phase: null,
+            reasonCode: "waiting_for_turn",
+            reasonDetail: null,
+            cancelledAt: null,
+            cancelledBy: null,
+            canCancel: true,
+          },
+          revision: Number(workItem.revision) + 1,
+        };
+        return route.fulfill({ json: { workItem } });
+      }
+      if (pathname === "/api/work-items/lwi_confirmation" && request.method() === "GET") {
+        return route.fulfill({ json: { workItem, observability: { latestRun: null, delivery: null } } });
+      }
+      if (pathname === "/api/work-items/lwi_confirmation/comments") {
+        return route.fulfill({ json: { comments: [] } });
+      }
+      if (pathname === "/api/work-items/attention") {
+        return route.fulfill({ json: { items: [], metrics: null, nextCursor: null } });
+      }
+      if (pathname === "/api/work-items/external-funnel") {
+        return route.fulfill({ json: {
+          metrics: { total: 0, notStarted: 0, running: 0, review: 0, completed: 0, stalled: 0 },
+          stalls: [],
+        } });
+      }
+      if (pathname === "/api/work-items" && request.method() === "GET") {
+        return route.fulfill({ json: { workItems: [workItem], count: 1, hasMore: false, nextCursor: null } });
+      }
+      return fulfillDashboardFallback(route);
+    });
+    await page.addInitScript(({ locale }) => {
+      window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+        version: 1,
+        state: {
+          section: "task",
+          locale,
+          selectedAgentId: "agent-1",
+          selectedProjectId: "project-1",
+          selectedWorkItemId: "lwi_confirmation",
+          selectedWorkItemMode: "summary",
+        },
+      }));
+    }, { locale: fixture.locale });
+
+    await page.goto("/?section=task&task=lwi_confirmation");
+    let summary = page.getByTestId("work-item-summary-view");
+    await expect(summary).toBeVisible({ timeout: 15_000 });
+    const start = summary.getByTestId("review-and-start-ai");
+    await start.focus();
+    await expect(start).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    let confirmation = page.getByRole("dialog", { name: fixture.dialog });
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation.getByText(fixture.goal, { exact: true })).toBeVisible();
+    await expect(confirmation.getByText(fixture.criterion, { exact: true })).toBeVisible();
+    await expect(confirmation.getByText(fixture.verification, { exact: true })).toBeVisible();
+    expect(prepareCalls).toBe(1);
+    expect(confirmCalls).toBe(0);
+    const initialWidths = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+    }));
+    expect(initialWidths.document).toBeLessThanOrEqual(initialWidths.viewport);
+    expect(await confirmation.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+
+    const cancel = confirmation.getByRole("button", { name: fixture.cancel });
+    await cancel.focus();
+    await expect(cancel).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(confirmation).toBeHidden();
+    expect(confirmCalls).toBe(0);
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    summary = page.getByTestId("work-item-summary-view");
+    await expect(summary).toBeVisible({ timeout: 15_000 });
+    const recoveredStart = summary.getByRole("button", { name: fixture.preparedAction, exact: true });
+    await expect(recoveredStart).toBeVisible();
+    expect(prepareCalls).toBe(1);
+    await recoveredStart.focus();
+    await page.keyboard.press("Enter");
+
+    confirmation = page.getByRole("dialog", { name: fixture.dialog });
+    const confirm = confirmation.getByRole("button", { name: fixture.confirm });
+    await confirm.focus();
+    await page.keyboard.press("Enter");
+    await confirmStarted;
+    const pendingConfirm = confirmation.getByRole("button", { name: fixture.confirming });
+    await expect(pendingConfirm).toBeDisabled();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => confirmCalls).toBe(1);
+    confirmGate.release?.();
+
+    await expect(summary.getByText(fixture.accepted, { exact: true })).toBeVisible();
+    await expect(confirmation).toBeHidden();
+    expect(confirmCalls).toBe(1);
+    const finalWidths = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+    }));
+    expect(finalWidths.document).toBeLessThanOrEqual(finalWidths.viewport);
+  });
+}
+
 test("preserves reviewed source and per-task edits while the user configures a capability", async ({ page }) => {
   await page.route("http://127.0.0.1:5001/api/**", async (route) => {
     const request = route.request();
