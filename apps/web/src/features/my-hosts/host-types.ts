@@ -137,6 +137,17 @@ export interface HostDiagnosticPlan {
 
 export type HostDiagnosticRunIntent = "health" | "performance" | "website" | "security" | "containers" | "targeted";
 
+export interface HostOperationsIntentUnderstanding {
+  version: 1;
+  goal: "inspect" | "restore" | "improve" | "secure";
+  domain: "device" | "website" | "performance" | "storage" | "memory" | "network" | "security" | "containers" | "service" | "logs";
+  symptom: "unspecified" | "unavailable" | "slow" | "storage_pressure" | "memory_pressure" | "high_load" | "suspicious_access";
+  desiredOutcome: "understand_state" | "restore_availability" | "improve_performance" | "free_space" | "verify_security";
+  requestedChange: "none" | "restart_service" | "cleanup_storage" | "stop_process" | "change_access" | "other_change";
+  handling: "read_only_diagnosis" | "diagnose_before_change";
+  confidence: "high" | "medium";
+}
+
 export interface HostDiagnosticRunStep {
   action: HostDiagnosticAction;
   parameters?: HostDiagnosticParameters;
@@ -151,6 +162,7 @@ export interface HostDiagnosticRun {
   id: string;
   version: 1;
   intent: HostDiagnosticRunIntent;
+  understanding?: HostOperationsIntentUnderstanding;
   risk: "read_only";
   steps: HostDiagnosticRunStep[];
   summary: HostDiagnosticSummary;

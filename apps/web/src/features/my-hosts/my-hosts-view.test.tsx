@@ -76,6 +76,7 @@ beforeEach(async () => {
   vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "disk_usage", command: "df -h", risk: "read_only" } });
   vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
     id: "hdr_performance", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "performance", risk: "read_only", primaryAction: "disk_usage",
+    understanding: { version: 1, goal: "improve", domain: "performance", symptom: "slow", desiredOutcome: "improve_performance", requestedChange: "none", handling: "read_only_diagnosis", confidence: "high" },
     summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [
       { key: "diagnostic_completed_count", value: "2", severity: "info" },
       { key: "diagnostic_issue_count", value: "1", severity: "warning" },
@@ -130,6 +131,36 @@ it("gives ordinary users one clear health check and opt-in daily care without te
   fireEvent.click(screen.getByRole("button", { name: "Check daily for me" }));
   await waitFor(() => expect(hostApi.setHealthMonitoring).toHaveBeenCalledWith(host.id, { enabled: true, cadence: "daily" }));
   expect(screen.queryByText("df -h")).toBeNull();
+});
+
+it("explains an open health incident and continues with the matching read-only diagnosis", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [{ ...host, healthSummary: { status: "needs_attention", checkedAt: "2026-08-29T00:00:00.000Z", openIncidentCount: 1, monitoringEnabled: true } }], count: 1 });
+  vi.mocked(hostApi.health).mockResolvedValue({
+    policy: { enabled: true, cadence: "daily", nextRunAt: "2026-08-30T00:00:00.000Z", lastRunAt: "2026-08-29T00:00:00.000Z", lastRunStatus: "needs_attention", revision: 2 },
+    latestSnapshot: {
+      id: "hhs_warning", version: 1, source: "scheduled", status: "needs_attention", reason: "findings_detected", severity: "critical",
+      findings: [{ key: "disk_usage:disk_capacity_critical", action: "disk_usage", severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space" }],
+      checkedActions: ["connection", "disk_usage"], diagnosticRunId: "hdr_health", checkedAt: "2026-08-29T00:00:00.000Z",
+    },
+    snapshots: [],
+    incidents: [{
+      id: "hhi_disk", key: "disk_usage:disk_capacity_critical", action: "disk_usage", severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space",
+      status: "open", occurrenceCount: 2, firstSeenAt: "2026-08-28T18:00:00.000Z", lastSeenAt: "2026-08-29T00:00:00.000Z", openedAt: "2026-08-29T00:00:00.000Z", recoveredAt: null,
+    }],
+    openIncidentCount: 1,
+  });
+  renderView();
+
+  expect((await screen.findAllByText("Needs attention")).length).toBeGreaterThan(0);
+  expect(await screen.findByText("Device space is critically low")).toBeTruthy();
+  expect(screen.getByText("Uploads, saves, or publishing may fail.")).toBeTruthy();
+  expect(screen.getByText("Free some device space, then retry the operation.")).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Continue checking" }));
+  await waitFor(() => expect(hostApi.diagnoseIssue).toHaveBeenCalledWith(host.id, "Check disk space"));
+  expect((screen.getByPlaceholderText("For example: who signed in recently?") as HTMLInputElement).value).toBe("Check disk space");
+  expect(await screen.findByText("Combined check complete · 2/2")).toBeTruthy();
 });
 
 it("restores a stored desktop credential and reconnects after restart without asking for it again", async () => {
@@ -530,12 +561,32 @@ it("turns an ordinary problem description into one combined diagnostic run", asy
   await waitFor(() => expect(hostApi.diagnoseIssue).toHaveBeenCalledWith(host.id, "The machine is very slow"));
   expect(hostApi.planDiagnostic).not.toHaveBeenCalled();
   expect(await screen.findByText("Combined check complete · 2/2")).toBeTruthy();
+  expect(screen.getByText("find why device performance is slow and get it running smoothly")).toBeTruthy();
+  expect(screen.getByText("I ran read-only checks for this goal and did not change the device.")).toBeTruthy();
   expect(screen.getByText("Items needing attention were found")).toBeTruthy();
   expect(screen.getByText("First lead to review")).toBeTruthy();
   expect(screen.getByText("Device space is critically low")).toBeTruthy();
   expect(screen.getByText("Resource-use information is available")).toBeTruthy();
   expect(screen.queryByText("df -h")).toBeNull();
   expect(screen.queryByText("/dev/sda1 95% /")).toBeNull();
+});
+
+it("acknowledges a requested host change but keeps the ordinary flow diagnosis-first", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValueOnce({ run: {
+    id: "hdr_cleanup", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "performance", risk: "read_only", primaryAction: "disk_usage",
+    understanding: { version: 1, goal: "restore", domain: "storage", symptom: "storage_pressure", desiredOutcome: "free_space", requestedChange: "cleanup_storage", handling: "diagnose_before_change", confidence: "high" },
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
+    steps: [{ action: "disk_usage", status: "completed", summary: { version: 1, severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space", facts: [] } }],
+  } });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The disk is full, clean it up for me" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+  expect(await screen.findByText("free enough device storage")).toBeTruthy();
+  expect(screen.getByText(/You requested a change\. I checked the cause first and did not perform it/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /clean|delete|confirm/i })).toBeNull();
 });
 
 it("shows one reviewed website repair and verifies it after a single confirmation", async () => {
@@ -562,6 +613,24 @@ it("shows one reviewed website repair and verifies it after a single confirmatio
   fireEvent.click(screen.getByRole("button", { name: "Confirm and repair" }));
   await waitFor(() => expect(hostApi.confirmRemediation).toHaveBeenCalledWith(host.id, remediationPlan.id, remediationPlan.revision));
   expect(await screen.findByText("The website is available again")).toBeTruthy();
+});
+
+it("explains why an unbound website cannot be repaired instead of hiding the next step", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    id: "hdr_website_unbound", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
+    steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "warning", finding: "failed_services_found", impact: "service_may_be_unavailable", nextAction: "inspect_failed_services", facts: [] } }],
+  } });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+  expect(await screen.findByText("No safely managed website service is configured")).toBeTruthy();
+  expect(screen.getByText(/will not guess which service to reload/i)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Confirm and repair" })).toBeNull();
 });
 
 it("does not offer an automatic retry when website repair verification is incomplete", async () => {

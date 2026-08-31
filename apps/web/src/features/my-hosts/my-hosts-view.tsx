@@ -37,9 +37,10 @@ import { ApiError } from "@/lib/api/request";
 import { useUiStore } from "@/store/ui-store";
 import { MAX_HOST_DOWNLOAD_BYTES, MAX_HOST_UPLOAD_BYTES, hostApi } from "./host-api";
 import { HOST_DIAGNOSTIC_QUICK_ACTIONS, hostDiagnosticPlan, hostDiagnosticPlanCopy, hostDiagnosticSummaryCopy, parseHostLoginAuditEvents, suggestHostDiagnostic } from "./host-assistant";
-import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticResult, HostDiagnosticRun, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResult, HostFileTransfer, HostHealthIncident, HostHealthSnapshot, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticResult, HostDiagnosticRun, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResult, HostFileTransfer, HostHealthIncident, HostHealthSnapshot, HostOperationsIntentUnderstanding, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
 
 type DetailTab = "overview" | "files" | "transfers" | "settings";
+type HostAssistantRequest = { id: number; hostId: string; question: string };
 
 function errorText(error: unknown, zh: boolean) {
   const code = error instanceof ApiError ? error.code : "";
@@ -208,6 +209,12 @@ function HostDetail({ host, tab, setTab, zh, professional, onContinue }: { host:
 function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host: SshHost; scopeCount: number; zh: boolean; professional: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
   const ready = host.connectionStatus === "ready";
   const recovery = hostRecovery(host, zh, professional);
+  const requestSequence = useRef(0);
+  const [assistantRequest, setAssistantRequest] = useState<HostAssistantRequest | null>(null);
+  const investigate = (incident: HostHealthIncident) => {
+    requestSequence.current += 1;
+    setAssistantRequest({ id: requestSequence.current, hostId: host.id, question: hostIncidentQuestion(incident, zh) });
+  };
   return <div className="space-y-4">
     <div className="grid gap-3 sm:grid-cols-3">
       <Summary icon={ready ? CheckCircle2 : TriangleAlert} label={professional ? (zh ? "连接" : "Connection") : (zh ? "设备状态" : "Device status")} value={ready ? professional ? (zh ? "已验证" : "Verified") : (zh ? "可以使用" : "Ready to use") : professional ? (zh ? "未完成" : "Incomplete") : (zh ? "需要处理" : "Action needed")} />
@@ -216,8 +223,8 @@ function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host
     </div>
     {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div className="min-w-0 flex-1"><p className="text-sm font-medium">{recovery.title}</p><p className="mt-1 text-xs text-muted-foreground">{recovery.detail}</p></div><Button onClick={() => onContinue(recovery.allowPrivate ? { allowPrivate: true } : undefined)}>{recovery.action}<ChevronRight /></Button></div> : null}
     {professional && host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
-    <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} />
-    <HostAssistant host={host} zh={zh} professional={professional} onRepairCredential={onContinue} />
+    <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} onInvestigate={investigate} />
+    <HostAssistant host={host} zh={zh} professional={professional} onRepairCredential={onContinue} request={assistantRequest} />
   </div>;
 }
 
@@ -243,7 +250,7 @@ function Summary({ icon: Icon, label, value }: { icon: typeof Server; label: str
   return <div className="rounded-lg border p-3"><Icon className="size-5 text-primary" /><p className="mt-3 text-xs text-muted-foreground">{label}</p><p className="mt-1 text-sm font-medium">{value}</p></div>;
 }
 
-function HostHealthPanel({ host, zh, professional, onRepairCredential }: { host: SshHost; zh: boolean; professional: boolean; onRepairCredential: () => void }) {
+function HostHealthPanel({ host, zh, professional, onRepairCredential, onInvestigate }: { host: SshHost; zh: boolean; professional: boolean; onRepairCredential: () => void; onInvestigate: (incident: HostHealthIncident) => void }) {
   const queryClient = useQueryClient();
   const overview = useQuery({ queryKey: ["host-health", host.id], queryFn: () => hostApi.health(host.id) });
   const check = useMutation({
@@ -271,7 +278,7 @@ function HostHealthPanel({ host, zh, professional, onRepairCredential }: { host:
     {check.error ? <p role="alert" className="mt-3 rounded-lg bg-warning/10 p-3 text-xs">{zh ? "这次检查没有完成，设备没有被修改。请稍后重试。" : "This check did not finish. The device was not changed. Try again later."}</p> : null}
     {monitoring.error ? <p role="alert" className="mt-3 rounded-lg bg-warning/10 p-3 text-xs">{zh ? "自动照看设置没有保存，现有设置保持不变。" : "Automatic care was not changed. The existing setting is still in effect."}</p> : null}
     {snapshot?.status === "paused" && snapshot.reason === "sign_in_required" ? <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-warning/10 p-3"><p className="text-xs text-muted-foreground">{zh ? "此电脑需要先准备好保存的登录信息，设备本身未被判定为离线。" : "This computer needs the saved sign-in details. The device was not marked offline."}</p><Button size="sm" variant="ghost" onClick={onRepairCredential}><KeyRound />{zh ? "准备登录信息" : "Prepare sign-in"}</Button></div> : null}
-    {recent.length ? <div className="mt-3 divide-y rounded-lg border" data-testid="host-health-timeline">{recent.map((incident) => <HostHealthEvent key={incident.id} incident={incident} zh={zh} />)}</div> : snapshot ? <p className="mt-3 rounded-lg bg-muted p-3 text-xs text-muted-foreground">{zh ? "最近没有需要处理的健康事件。" : "No recent health events need attention."}</p> : null}
+    {recent.length ? <div className="mt-3 divide-y rounded-lg border" data-testid="host-health-timeline">{recent.map((incident, index) => <HostHealthEvent key={incident.id} incident={incident} zh={zh} professional={professional} initiallyOpen={index === 0 && incident.status === "open"} onInvestigate={onInvestigate} />)}</div> : snapshot ? <p className="mt-3 rounded-lg bg-muted p-3 text-xs text-muted-foreground">{zh ? "最近没有需要处理的健康事件。" : "No recent health events need attention."}</p> : null}
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3"><p className="text-xs text-muted-foreground">{overview.data?.policy.enabled ? (zh ? `自动照看已开启 · ${overview.data.policy.cadence === "daily" ? "每天一次" : "每 6 小时一次"} · 只读检查` : `Automatic care is on · ${overview.data.policy.cadence === "daily" ? "daily" : "every 6 hours"} · read-only`) : (zh ? "开启后会定期只读检查；不会自动清理、重启或修改设备。" : "Turn this on for periodic read-only checks. It never cleans, restarts, or changes the device automatically.")}</p><Button size="sm" variant="ghost" disabled={busy || overview.isLoading} onClick={() => monitoring.mutate(!overview.data?.policy.enabled)}>{monitoring.isPending ? <Loader2 className="animate-spin" /> : null}{overview.data?.policy.enabled ? (zh ? "停止自动照看" : "Stop automatic care") : (zh ? "每天帮我看一下" : "Check daily for me")}</Button></div>
   </div>;
 }
@@ -285,13 +292,40 @@ function healthStatusCopy(snapshot: HostHealthSnapshot | null, openCount: number
   return { title: zh ? "这次没有检查完整" : "This check was incomplete", detail: zh ? "当前不会据此判断设备异常，也不会自动处理。" : "The device is not marked unhealthy from this result, and nothing is changed automatically." };
 }
 
-function HostHealthEvent({ incident, zh }: { incident: HostHealthIncident; zh: boolean }) {
-  const action = incident.action === "connection" ? (zh ? "设备连接" : "Device connection") : ordinaryDiagnosticLabel(incident.action, zh);
-  const recovered = incident.status === "recovered";
-  return <div className="flex flex-wrap items-center justify-between gap-2 p-3 text-xs"><span className="flex items-center gap-2">{recovered ? <CheckCircle2 className="size-4 text-primary" /> : <TriangleAlert className="size-4 text-warning" />}<span className="font-medium">{recovered ? (zh ? `${action}已恢复` : `${action} recovered`) : (zh ? `${action}需要留意` : `${action} needs attention`)}</span></span><time className="text-muted-foreground">{new Date(incident.recoveredAt ?? incident.lastSeenAt).toLocaleString()}</time></div>;
+function hostIncidentQuestion(incident: HostHealthIncident, zh: boolean) {
+  const questions: Partial<Record<HostDiagnosticAction | "connection", [string, string]>> = {
+    connection: ["全面检查这台设备", "Run an overall health check"],
+    disk_usage: ["检查磁盘空间", "Check disk space"],
+    memory_usage: ["检查内存使用", "Check memory use"],
+    system_info: ["检查系统信息", "Check system information"],
+    uptime: ["检查设备负载", "Check device load"],
+    login_sessions: ["检查当前登录会话", "Check current sign-in sessions"],
+    ssh_login_audit: ["检查登录审计", "Check SSH sign-in audit"],
+    failed_services: ["检查失败服务", "Check failed services"],
+    processes: ["检查程序占用", "Check resource-heavy processes"],
+    listening_ports: ["检查监听端口", "Check listening ports"],
+    docker_status: ["检查容器状态", "Check container status"],
+    recent_logs: ["检查最近系统事件", "Check recent system events"],
+    network_info: ["检查网络状态", "Check network status"],
+    service_status: ["检查失败服务", "Check failed services"],
+  };
+  return (questions[incident.action] ?? questions.connection)![zh ? 0 : 1];
 }
 
-function HostAssistant({ host, zh, professional, onRepairCredential }: { host: SshHost; zh: boolean; professional: boolean; onRepairCredential: () => void }) {
+function HostHealthEvent({ incident, zh, professional, initiallyOpen, onInvestigate }: { incident: HostHealthIncident; zh: boolean; professional: boolean; initiallyOpen: boolean; onInvestigate: (incident: HostHealthIncident) => void }) {
+  const action = incident.action === "connection" ? (zh ? "设备连接" : "Device connection") : ordinaryDiagnosticLabel(incident.action, zh);
+  const recovered = incident.status === "recovered";
+  const copy = hostDiagnosticSummaryCopy({ version: 1, severity: incident.severity, finding: incident.finding, impact: incident.impact, nextAction: incident.nextAction, facts: [] }, zh, !professional);
+  return <details className="group p-3" open={initiallyOpen} data-testid={`host-health-incident-${incident.id}`}>
+    <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 text-xs"><span className="flex min-w-0 items-center gap-2">{recovered ? <CheckCircle2 className="size-4 shrink-0 text-primary" /> : <TriangleAlert className="size-4 shrink-0 text-warning" />}<span><span className="block font-medium">{recovered ? (zh ? `${action}已恢复` : `${action} recovered`) : copy.finding}</span>{!recovered ? <span className="mt-0.5 block text-muted-foreground">{action}</span> : null}</span></span><time className="text-muted-foreground">{new Date(incident.recoveredAt ?? incident.lastSeenAt).toLocaleString()}</time></summary>
+    <div className="mt-3 space-y-3 border-t pt-3">
+      {recovered ? <p className="rounded-md bg-primary/[0.06] p-3 text-xs">{zh ? "连续复查已经确认这项状态恢复正常。" : "Repeated checks confirmed that this area recovered."}</p> : <div className="grid gap-2 text-xs sm:grid-cols-2"><div className="rounded-md bg-muted p-3"><span className="text-muted-foreground">{professional ? (zh ? "影响" : "Impact") : (zh ? "这意味着" : "What this means")}</span><p className="mt-1">{copy.impact}</p></div><div className="rounded-md bg-primary/[0.06] p-3"><span className="text-muted-foreground">{professional ? (zh ? "下一步" : "Next step") : (zh ? "建议" : "Suggestion")}</span><p className="mt-1 font-medium">{copy.nextAction}</p></div></div>}
+      {!recovered ? <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-muted-foreground">{zh ? "助手只会继续执行固定只读检查；如有处理方案，会另行展示影响并请求确认。" : "The assistant continues with fixed read-only checks. Any repair is shown separately with its impact and confirmation."}</p><Button size="sm" variant="secondary" onClick={() => onInvestigate(incident)}><Sparkles />{zh ? "继续帮我检查" : "Continue checking"}</Button></div> : null}
+    </div>
+  </details>;
+}
+
+function HostAssistant({ host, zh, professional, onRepairCredential, request }: { host: SshHost; zh: boolean; professional: boolean; onRepairCredential: () => void; request: HostAssistantRequest | null }) {
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
   const [plan, setPlan] = useState<ReturnType<typeof suggestHostDiagnostic>>(null);
@@ -300,6 +334,7 @@ function HostAssistant({ host, zh, professional, onRepairCredential }: { host: S
   const [remediation, setRemediation] = useState<HostRemediationPlan | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [credentialRepairNeeded, setCredentialRepairNeeded] = useState(false);
+  const handledRequestKey = useRef<string | null>(null);
   const choose = (next: NonNullable<typeof plan>) => { setPlan(next); setResult(null); setRun(null); setRemediation(null); setMessage(null); setCredentialRepairNeeded(false); };
   const mutation = useMutation({
     mutationFn: (next: NonNullable<typeof plan>) => next.parameters ? hostApi.diagnose(host.id, next.action, next.parameters) : hostApi.diagnose(host.id, next.action),
@@ -317,7 +352,7 @@ function HostAssistant({ host, zh, professional, onRepairCredential }: { host: S
     if (!professional) mutation.mutate(next);
   };
   const planMutation = useMutation({
-    mutationFn: () => hostApi.planDiagnostic(host.id, input.trim()),
+    mutationFn: (question: string) => hostApi.planDiagnostic(host.id, question),
     onSuccess: (response) => {
       selectAction({ ...hostDiagnosticPlan(response.plan.action, response.plan.parameters), command: response.plan.command, parameters: response.plan.parameters });
     },
@@ -367,13 +402,21 @@ function HostAssistant({ host, zh, professional, onRepairCredential }: { host: S
   });
   useEffect(() => { setInput(""); setPlan(null); setResult(null); setRun(null); setRemediation(null); setMessage(null); setCredentialRepairNeeded(false); }, [host.id]);
   useEffect(() => { if (host.connectionStatus !== "ready") { setPlan(null); setResult(null); setRun(null); setRemediation(null); } }, [host.connectionStatus]);
+  const ready = host.connectionStatus === "ready";
+  useEffect(() => {
+    const requestKey = request ? `${request.hostId}:${request.id}` : null;
+    if (!request || request.hostId !== host.id || handledRequestKey.current === requestKey || !ready) return;
+    handledRequestKey.current = requestKey;
+    setInput(request.question);
+    if (professional) planMutation.mutate(request.question);
+    else runMutation.mutate(request.question);
+  }, [host.id, professional, ready, request]);
   const busy = planMutation.isPending || mutation.isPending || runMutation.isPending || remediationPlanMutation.isPending || remediationConfirmMutation.isPending || remediationRecheckMutation.isPending;
   const submit = () => {
     if (!input.trim() || busy) return;
-    if (professional) planMutation.mutate();
+    if (professional) planMutation.mutate(input.trim());
     else runMutation.mutate(input.trim());
   };
-  const ready = host.connectionStatus === "ready";
   const planCopy = plan ? hostDiagnosticPlanCopy(plan, zh) : null;
   return <div className="rounded-lg border bg-card p-4" data-testid="host-assistant">
     <div className="flex flex-wrap items-start gap-3"><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Bot className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{zh ? "问问 AI" : "Ask AI"}</p>{professional ? <StatusBadge tone="neutral"><Sparkles className="size-3" />{zh ? "只读检查" : "Read-only checks"}</StatusBadge> : <StatusBadge tone="success"><Sparkles className="size-3" />{zh ? "设备助手" : "Device assistant"}</StatusBadge>}</div><p className="mt-1 text-xs text-muted-foreground">{professional ? (zh ? "说出你遇到的问题。助手会先展示固定检查计划，确认后执行。" : "Describe the problem. The assistant shows a fixed inspection plan before it runs.") : (zh ? "直接问这台设备的空间、内存、程序、网络或最近登录情况。" : "Ask about this device's storage, memory, apps, network, or recent sign-ins.")}</p></div></div>
@@ -396,6 +439,8 @@ function HostAssistant({ host, zh, professional, onRepairCredential }: { host: S
       onConfirm={(next) => remediationConfirmMutation.mutate(next)}
       onRecheck={(next) => remediationRecheckMutation.mutate(next)}
     /> : null}
+    {remediationEligible && remediationProfiles.error ? <div role="alert" className="mt-4 rounded-lg border border-warning/30 bg-warning/10 p-3"><p className="text-sm font-medium">{zh ? "暂时无法确认是否有安全处理方案" : "Repair availability could not be confirmed"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "设备没有被修改。可以稍后重新检查，或到“我的站点”的专业设置确认托管服务。" : "The device was not changed. Check again later or verify the managed service in My Sites Professional settings."}</p></div> : null}
+    {remediationEligible && !remediationProfiles.isLoading && !remediationProfiles.error && !remediationProfiles.data?.profiles.length ? <div className="mt-4 rounded-lg border border-warning/30 bg-warning/10 p-3" data-testid="host-remediation-unavailable"><p className="text-sm font-medium">{zh ? "这台设备还没有可安全处理的网站服务" : "No safely managed website service is configured"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "主机侧只读检查已经完成，但助手不会猜测要重载哪个服务。请先在“我的站点”的专业设置中绑定已验证主机、HTTPS 和托管服务。" : "The read-only host check is complete, but the assistant will not guess which service to reload. First bind a verified host, HTTPS, and managed service in My Sites Professional settings."}</p></div> : null}
     {!professional && remediationHistory.data?.plans.length ? <HostRemediationHistory plans={remediationHistory.data.plans} zh={zh} rechecking={remediationRecheckMutation.isPending} onRecheck={(next) => remediationRecheckMutation.mutate(next)} /> : null}
   </div>;
 }
@@ -459,7 +504,9 @@ function DiagnosticRunPanel({ run, zh, professional }: { run: HostDiagnosticRun;
   const completed = run.steps.filter((step) => step.status === "completed").length;
   const primary = run.primaryAction ? run.steps.find((step) => step.action === run.primaryAction && step.summary) : null;
   const primaryCopy = primary?.summary ? hostDiagnosticSummaryCopy(primary.summary, zh, !professional) : null;
+  const understandingCopy = run.understanding ? hostOperationsUnderstandingCopy(run.understanding, zh) : null;
   return <div className="mt-4 space-y-3" data-testid="diagnostic-run">
+    {understandingCopy ? <div className="rounded-lg border border-primary/20 bg-primary/[0.04] p-3" data-testid="host-intent-understanding"><p className="text-xs font-medium text-primary">{zh ? "我理解你的目标是" : "What I understood"}</p><p className="mt-1 text-sm font-medium">{understandingCopy.outcome}</p><p className="mt-1 text-xs text-muted-foreground">{understandingCopy.handling}</p></div> : null}
     <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><CheckCircle2 className="size-4 text-primary" />{zh ? `综合检查完成 · ${completed}/${run.steps.length} 项` : `Combined check complete · ${completed}/${run.steps.length}`}</div>
     <DiagnosticSummaryPanel summary={run.summary} zh={zh} professional={professional} />
     {primary && primaryCopy && ["critical", "warning"].includes(primary.summary!.severity) ? <div className="rounded-lg border border-warning/30 bg-warning/10 p-3"><p className="text-xs text-muted-foreground">{zh ? "优先线索" : "First lead to review"}</p><p className="mt-1 text-sm font-medium">{ordinaryDiagnosticLabel(primary.action, zh)} · {primaryCopy.finding}</p></div> : null}
@@ -471,6 +518,26 @@ function DiagnosticRunPanel({ run, zh, professional }: { run: HostDiagnosticRun;
       return <div key={step.action} className="p-3"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-medium">{ordinaryDiagnosticLabel(step.action, zh)}</span><StatusBadge tone={tone}>{status}</StatusBadge></div><p className="mt-1 text-xs text-muted-foreground">{copy?.finding ?? (zh ? "这台设备暂时无法完成该项检查，其余结果仍然有效。" : "This check is unavailable on the device; the other results remain valid.")}</p></div>;
     })}</div>
   </div>;
+}
+
+function hostOperationsUnderstandingCopy(understanding: HostOperationsIntentUnderstanding, zh: boolean) {
+  const domain: Record<HostOperationsIntentUnderstanding["domain"], readonly [string, string]> = {
+    device: ["这台设备", "this device"], website: ["网站", "the website"], performance: ["设备运行", "device performance"],
+    storage: ["设备空间", "device storage"], memory: ["内存使用", "memory use"], network: ["网络连接", "the network connection"],
+    security: ["设备登录与访问", "device access"], containers: ["容器服务", "container services"], service: ["相关服务", "the related service"], logs: ["最近事件", "recent events"],
+  };
+  const target = domain[understanding.domain][zh ? 0 : 1];
+  const outcomes: Record<HostOperationsIntentUnderstanding["desiredOutcome"], readonly [string, string]> = {
+    understand_state: [`了解${target}现在是否正常`, `understand whether ${target} is working normally`],
+    restore_availability: [`让${target}恢复可用`, `get ${target} working again`],
+    improve_performance: [`找出${target}变慢的原因并恢复顺畅`, `find why ${target} is slow and get it running smoothly`],
+    free_space: ["释放足够的设备空间", "free enough device storage"],
+    verify_security: ["确认最近登录是否安全", "verify whether recent sign-ins are safe"],
+  };
+  const handling = understanding.handling === "diagnose_before_change"
+    ? (zh ? "你希望执行一项变更。我先检查了原因，没有直接操作；只有存在可验证的受控方案时，才会另行展示影响并请你确认。" : "You requested a change. I checked the cause first and did not perform it. A verified, governed option will show its impact and ask separately for confirmation.")
+    : (zh ? "我按这个目标完成了只读检查，没有修改设备。" : "I ran read-only checks for this goal and did not change the device.");
+  return { outcome: outcomes[understanding.desiredOutcome][zh ? 0 : 1], handling };
 }
 
 function ordinaryDiagnosticLabel(action: HostDiagnosticAction, zh: boolean) {
