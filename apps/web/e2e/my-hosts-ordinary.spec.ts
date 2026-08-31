@@ -47,6 +47,11 @@ async function mockOrdinaryHostApi(page: Page, fixture: { host?: HostFixture; sc
       projects: [], worktrees: [], projectTargets: [], pendingDecisions: [], evidenceLedger: [], invocations: [], events: [],
     } });
     if (path === "/api/hosts") return route.fulfill({ json: { hosts: [currentHost], count: 1 } });
+    if (path === `/api/hosts/${currentHost.id}/health`) return route.fulfill({ json: {
+      policy: { enabled: false, cadence: "daily", nextRunAt: null, lastRunAt: null, lastRunStatus: null, revision: 0 },
+      latestSnapshot: null, snapshots: [], incidents: [], openIncidentCount: 0,
+    } });
+    if (path === `/api/hosts/${currentHost.id}/assistant/remediation-plans`) return route.fulfill({ json: { plans: [], count: 0 } });
     if (path === `/api/hosts/${currentHost.id}/file-scopes`) return route.fulfill({ json: { scopes: currentScope ? [currentScope] : [], count: currentScope ? 1 : 0 } });
     if (currentScope && path === `/api/host-file-scopes/${currentScope.id}/entries`) return route.fulfill({ json: { scope: currentScope, path: "", count: 2, entries: [
       { name: "docs", path: "docs", type: "directory", accessible: true, size: null, modifiedAt: null },

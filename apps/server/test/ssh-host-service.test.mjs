@@ -213,6 +213,10 @@ test("runs a bounded multi-step diagnosis for an ordinary host problem", async (
 
   assert.equal(result.ok, true);
   assert.equal(result.run.intent, "performance");
+  assert.deepEqual(result.run.understanding, {
+    version: 1, goal: "improve", domain: "performance", symptom: "slow", desiredOutcome: "improve_performance",
+    requestedChange: "none", handling: "read_only_diagnosis", confidence: "high",
+  });
   assert.match(result.run.id, /^hdr_/);
   assert.equal(result.run.targetRevision, target.revision);
   assert.equal(state.hostDiagnosticRuns.length, 1);
@@ -225,6 +229,8 @@ test("runs a bounded multi-step diagnosis for an ordinary host problem", async (
   assert.equal(result.run.summary.facts.find((fact) => fact.key === "diagnostic_completed_count")?.value, "5");
   assert.equal(events.at(-1)?.type, "ssh.host_diagnostic_run.completed");
   assert.equal(JSON.stringify(events.at(-1)).includes("/dev/sda1"), false);
+  assert.equal(events.at(-1)?.data?.understanding?.desiredOutcome, "improve_performance");
+  assert.equal(JSON.stringify(events.at(-1)).includes("The machine is very slow"), false);
 });
 
 test("rejects unsafe or unsupported multi-step diagnostic requests", async () => {
