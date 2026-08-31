@@ -7,12 +7,15 @@ afterEach(() => cleanup());
 
 function assessment(overrides: Partial<WorkItemCompletionAssessment> = {}): WorkItemCompletionAssessment {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    workItemId: "wi_1",
+    category: "task",
     status: "completed",
     declaredComplete: true,
     evidenceComplete: true,
     falseCompletion: false,
     requiresUserAction: false,
+    exceptionHandlingRequired: false,
     humanInterventionRequired: false,
     reasonCodes: [],
     stages: {},
@@ -41,5 +44,20 @@ describe("work item completion status", () => {
     })} language="en" />);
     expect(screen.getByText("Task stopped")).toBeTruthy();
     expect(screen.getByText(/not counted as completed/)).toBeTruthy();
+  });
+
+  it("shows the one shared next action from the task journey", () => {
+    render(<WorkItemCompletionStatus
+      assessment={assessment({ status: "ready_to_complete", requiresUserAction: true })}
+      journey={{
+        schemaVersion: 1, origin: "channel", stage: "ready_to_complete", status: "ready",
+        waitingFor: "result_review", requiresUserAction: true, reasonCodes: [],
+        nextAction: { kind: "review_result", target: "task", required: true },
+        result: { available: true, verificationStatus: "passed", verified: true, deliveryStatus: "delivered", delivered: true },
+        refs: { workItemId: "wi_1", threadId: "cth_1", autoRunId: "aur_1" }, updatedAt: null,
+      }}
+      language="zh"
+    />);
+    expect(screen.getByTestId("work-item-journey-next-action").textContent).toContain("查看结果并确认");
   });
 });

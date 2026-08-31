@@ -50,6 +50,8 @@ test("persists one bounded execution action and replays the same request key", (
   updateExecutionAction(started.receipt, {
     status: "succeeded", messageCode: "retry_started", impact: "none", nextOwner: "ai", targetId: "inv_retry", now: h.now,
   });
+  assert.equal(started.receipt.workItemId, "lwi_1");
+  assert.equal(started.receipt.initiationSource, "user");
 
   const replay = replayExecutionAction(h.autoRun, {
     kind: "retry_execution", idempotencyKey: "retry-once", request: { feedback: null }, state: h.state,
@@ -72,6 +74,21 @@ test("persists one bounded execution action and replays the same request key", (
     errorMessage: null,
     replayed: false,
   });
+});
+
+test("marks system policy actions as automated recovery evidence", () => {
+  const h = harness();
+  const { receipt } = beginExecutionAction({
+    state: h.state,
+    autoRun: h.autoRun,
+    kind: "retry_execution",
+    actor: { userId: "system_task_recovery" },
+    idempotencyKey: "automatic-retry",
+    request: { feedback: null },
+    now: h.now,
+    nextId: h.nextId,
+  });
+  assert.equal(receipt.initiationSource, "automation");
 });
 
 test("rejects stale review evidence before recording or executing an action", () => {

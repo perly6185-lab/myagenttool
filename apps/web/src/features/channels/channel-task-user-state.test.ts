@@ -147,4 +147,66 @@ describe("channelTaskUserState", () => {
     expect(result.nextStep).toContain("文章需要至少 3 个章节");
     expect(result.actionLabel).toBe("查看检查结果");
   });
+
+  it("uses the shared task journey instead of promoting a generated result to completed", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "succeeded", workItemId: "work_1" }),
+      task: {
+        id: "task_1", channelId: "channel_1", projectId: "project_1", issueNumber: 1,
+        title: "生成文章", status: "done", stage: "run_succeeded",
+        actions: { retry: false, reroute: false, takeover: false },
+        journey: {
+          schemaVersion: 1, origin: "channel", stage: "ready_to_complete", status: "ready",
+          waitingFor: "result_review", requiresUserAction: true, reasonCodes: [],
+          nextAction: { kind: "review_result", target: "task", required: true },
+          result: { available: true, verificationStatus: "passed", verified: true, deliveryStatus: "delivered", delivered: true },
+        },
+      },
+    });
+    expect(result.label).toBe("结果待确认");
+    expect(result.nextStep).toContain("确认后才会计为真正完成");
+    expect(result.actionLabel).toBe("查看并确认");
+  });
+
+  it("turns a failed journey check into a direct governed AI repair action", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "needs_attention", workItemId: "work_1" }),
+      task: {
+        id: "task_1", channelId: "channel_1", projectId: "project_1", issueNumber: 1,
+        title: "生成文章", status: "routed", stage: "run_blocked",
+        resultVerification: { status: "failed", summary: "文章缺少结论章节" },
+        actions: { retry: false, fixWithAi: true, rerunVerification: true, reroute: false, takeover: false },
+        journey: {
+          schemaVersion: 1, origin: "channel", stage: "verification_failed", status: "attention",
+          waitingFor: "user_decision", requiresUserAction: true, reasonCodes: ["result_verification_failed"],
+          nextAction: { kind: "create_repair_task", target: "task", required: true },
+          result: { available: true, verificationStatus: "failed", verified: false, deliveryStatus: null, delivered: false },
+        },
+      },
+    });
+
+    expect(result.label).toBe("结果需要处理");
+    expect(result.nextStep).toContain("原结果和记录会保留");
+    expect(result.action).toBe("fix_with_ai");
+    expect(result.actionLabel).toBe("让 AI 按检查返工");
+  });
+
+  it("shows genuine completion only when the shared journey is closed", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "succeeded", workItemId: "work_1" }),
+      task: {
+        id: "task_1", channelId: "channel_1", projectId: "project_1", issueNumber: 1,
+        title: "生成文章", status: "done", stage: "run_succeeded",
+        actions: { retry: false, reroute: false, takeover: false },
+        journey: {
+          schemaVersion: 1, origin: "channel", stage: "completed", status: "completed",
+          waitingFor: null, requiresUserAction: false, reasonCodes: [],
+          nextAction: { kind: "none", target: "task", required: false },
+          result: { available: true, verificationStatus: "passed", verified: true, deliveryStatus: "delivered", delivered: true },
+        },
+      },
+    });
+    expect(result.label).toBe("已真正完成");
+    expect(result.nextStep).toContain("已经闭环");
+  });
 });

@@ -199,6 +199,10 @@ export function createServerState({ defaultProjectPath, now }) {
     // Long-term exactly-once facts for task execution actions. Recent user-facing
     // receipts stay bounded on each Auto-run; these records are not a UI feed.
     executionActionIdempotencyRecords: [],
+    // Immutable snapshots of real-client task quality cohorts. These preserve
+    // the exact denominator and metric definitions used for each acceptance
+    // run instead of recalculating historical results from current task state.
+    workItemAcceptanceBatches: [],
     // O5.2 follow-up: the last-emitted set of below-target SLO keys, so the
     // breach→alert sweep only fires when the breach set changes (not every tick).
     autoRunSloAlert: null,

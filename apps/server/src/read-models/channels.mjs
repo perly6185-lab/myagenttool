@@ -8,6 +8,8 @@
 
 import { parseWechatDraftInvocationResult } from "../services/wechat-draft-task-execution.mjs";
 import { verifyWorkItemResult } from "../services/work-item-result-verification.mjs";
+import { projectWorkItemJourney } from "../services/work-item-journey.mjs";
+import { latestExecutionActionReceipt } from "../services/work-item-execution-action.mjs";
 
 export function recentChannelLinkDiagnostics(events = [], deliveries = [], { limit = 5 } = {}) {
   const boundedLimit = Math.max(1, Math.min(20, Math.floor(Number(limit) || 5)));
@@ -244,7 +246,7 @@ export function channelOperations({
   });
 }
 
-export function channelTaskOperations({ requests = [], autoRuns = [], invocations = [], deliveries = [], workItems = [] } = {}) {
+export function channelTaskOperations({ requests = [], autoRuns = [], invocations = [], deliveries = [], workItems = [], threads = [] } = {}) {
   const runById = new Map(autoRuns.map((item) => [item.id, item]));
   const invocationById = new Map(invocations.map((item) => [item.id, item]));
   const workItemById = new Map(workItems.map((item) => [item.id, item]));
@@ -252,7 +254,6 @@ export function channelTaskOperations({ requests = [], autoRuns = [], invocation
     const autoRun = request.autoRunId ? runById.get(request.autoRunId) ?? null : null;
     const requestInvocationId = autoRun?.invocationId ?? request.invocationId ?? null;
     const invocation = requestInvocationId ? invocationById.get(requestInvocationId) ?? null : null;
-    const delivery = invocation ? deliveries.find((item) => item.invocationId === invocation.id) ?? null : null;
     const runStatus = autoRun?.status ?? null;
     const stage = request.status === "pending" ? "awaiting_route"
       : request.status === "dismissed" ? "dismissed"
@@ -266,9 +267,45 @@ export function channelTaskOperations({ requests = [], autoRuns = [], invocation
     const wechatDraftNeedsLogin = wechatDraftResult?.status === "session_expired"
       && wechatDraftResult?.sideEffectState === "not_started";
     const workItem = request.workItemId ? workItemById.get(request.workItemId) ?? null : null;
+    const thread = threads.find((candidate) => candidate.id === request.threadId
+      || (request.workItemId && candidate.workItemId === request.workItemId)) ?? null;
+    const delivery = deliveries
+      .filter((item) => (!item.taskContext?.deliveryKind || item.taskContext.deliveryKind === "result")
+        && ((invocation?.id && item.invocationId === invocation.id)
+          || (request.workItemId && item.taskContext?.workItemId === request.workItemId)
+          || (thread?.id && item.taskContext?.threadId === thread.id)))
+      .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "")
+        .localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))[0] ?? null;
     const resultVerification = (workItem?.resultVerificationContract || workItem?.artifactContract?.requirements?.length)
       ? (workItem.resultVerification ?? verifyWorkItemResult(workItem))
       : null;
+    const actionReceipt = latestExecutionActionReceipt(autoRun);
+    const actionLocked = ["accepted", "running", "unknown"].includes(actionReceipt?.status);
+    const hasWorktree = Boolean(autoRun?.worktreeId);
+    const repairableStatus = ["failed", "blocked", "done", "report_posted", "plan_proposed", "pr_open"].includes(runStatus);
+    const reverifiableStatus = ["done", "pr_open", "blocked", "cancelled"].includes(runStatus);
+    const verificationNeedsAttention = resultVerification?.status === "failed"
+      || autoRun?.verification?.passed === false
+      || autoRun?.verification?.checkPassed === false
+      || autoRun?.verification?.testsPassed === false;
+    const journey = projectWorkItemJourney({
+      item: workItem,
+      latestRun: autoRun,
+      invocation,
+      thread: thread ? {
+        ...thread,
+        // A thread's latest message can be a progress/status notification.
+        // The task journey must only describe the correlated result delivery.
+        lastDeliveryId: delivery?.id ?? null,
+        lastDeliveryStatus: delivery?.status ?? null,
+        lastDeliveryError: delivery?.lastErrorCode ?? null,
+      } : null,
+      delivery,
+      resultVerification,
+      outcome: {
+        status: (workItem?.outputAssets ?? []).length > 0 ? "available" : "pending",
+      },
+    });
     return {
       ...request,
       stage,
@@ -301,8 +338,13 @@ export function channelTaskOperations({ requests = [], autoRuns = [], invocation
         },
       } : {}),
       deliveryStatus: delivery?.status ?? null,
+      actionReceipt,
+      journey,
       actions: {
         retry: failed && !wechatDraftNeedsReconciliation,
+        fixWithAi: verificationNeedsAttention && hasWorktree && repairableStatus && !actionLocked,
+        rerunVerification: verificationNeedsAttention && hasWorktree && reverifiableStatus && !actionLocked,
+        retryDelivery: Boolean(delivery?.id) && ["failed", "failed_terminal", "sent_unconfirmed"].includes(delivery?.status) && !actionLocked,
         reroute: failed && ["dispatch_timeout", "orphaned", "stuck"].includes(autoRun?.errorCode),
         takeover: request.status === "routed" && (active || failed),
         ...(wechatDraftNeedsReconciliation ? { reconcileSaved: true, reconcileNotSaved: true } : {}),

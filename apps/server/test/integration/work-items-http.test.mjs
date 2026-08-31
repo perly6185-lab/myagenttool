@@ -199,9 +199,50 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
   const completionMetrics = await call("/api/work-items/completion-metrics?projectId=prj_a");
   assert.equal(completionMetrics.status, 200);
   assert.equal(completionMetrics.body.scope.projectId, "prj_a");
+  assert.equal(completionMetrics.body.scope.origin, "all");
+  assert.deepEqual(completionMetrics.body.scope.workItemIds, [created.body.workItem.id]);
   assert.equal(completionMetrics.body.metrics.completion.completed >= 1, true);
   assert.equal(completionMetrics.body.metrics.completion.completionRate, 1);
   assert.equal(completionMetrics.body.metrics.recovery.successRate, null, "no recovery sample is not reported as failure");
+  const channelMetrics = await call("/api/work-items/completion-metrics?projectId=prj_a&origin=channel");
+  assert.equal(channelMetrics.status, 200);
+  assert.equal(channelMetrics.body.scope.origin, "channel");
+  const acceptanceBatch = await call("/api/work-items/completion-metrics/batches", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      origin: "all",
+      workItemIds: [created.body.workItem.id],
+      queueType: "normal",
+      label: "真实客户端验收批次",
+      cohortKey: "desktop-real-2026-08-31",
+      idempotencyKey: "desktop-real-2026-08-31:final",
+    },
+  });
+  assert.equal(acceptanceBatch.status, 201);
+  assert.equal(acceptanceBatch.body.batch.report.metrics.schemaVersion, 2);
+  assert.equal(acceptanceBatch.body.batch.queueType, "normal");
+  assert.deepEqual(acceptanceBatch.body.batch.workItemIds, [created.body.workItem.id]);
+  const replayedBatch = await call("/api/work-items/completion-metrics/batches", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      origin: "all",
+      workItemIds: [created.body.workItem.id],
+      queueType: "normal",
+      label: "不能覆盖原快照",
+      cohortKey: "desktop-real-2026-08-31",
+      idempotencyKey: "desktop-real-2026-08-31:final",
+    },
+  });
+  assert.equal(replayedBatch.status, 200);
+  assert.equal(replayedBatch.body.replayed, true);
+  assert.equal(replayedBatch.body.batch.id, acceptanceBatch.body.batch.id);
+  assert.equal(replayedBatch.body.batch.label, "真实客户端验收批次");
+  const batches = await call("/api/work-items/completion-metrics/batches?projectId=prj_a&cohortKey=desktop-real-2026-08-31");
+  assert.equal(batches.status, 200);
+  assert.equal(batches.body.count, 1);
+  assert.equal((await call("/api/work-items/completion-metrics?origin=mail")).status, 400);
   assert.equal((await call("/api/work-items/completion-metrics?projectId=prj_b")).status, 404);
   const reopened = await call(`/api/work-items/${created.body.workItem.id}`, {
     method: "PATCH",

@@ -2466,8 +2466,24 @@ export const api = {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
     return request("GET", `/api/work-items${params.size ? `?${params}` : ""}`);
   },
-  getWorkItemCompletionMetrics: (projectId?: string) =>
-    request("GET", `/api/work-items/completion-metrics${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  getWorkItemCompletionMetrics: (projectId?: string, origin: "all" | "channel" | "task" = "all") => {
+    const params = new URLSearchParams();
+    if (projectId) params.set("projectId", projectId);
+    if (origin !== "all") params.set("origin", origin);
+    return request("GET", `/api/work-items/completion-metrics${params.size ? `?${params}` : ""}`);
+  },
+  createWorkItemCompletionMetricsBatch: (payload: {
+    projectId?: string; origin?: "all" | "channel" | "task";
+    workItemIds?: string[]; queueType?: "normal" | "recovery" | "mixed";
+    label: string; cohortKey: string; idempotencyKey: string;
+  }) => request("POST", "/api/work-items/completion-metrics/batches", payload),
+  listWorkItemCompletionMetricsBatches: (query: {
+    projectId?: string; origin?: "all" | "channel" | "task"; cohortKey?: string;
+    queueType?: "normal" | "recovery" | "mixed"; limit?: string;
+  } = {}) => {
+    const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
+    return request("GET", `/api/work-items/completion-metrics/batches${params.size ? `?${params}` : ""}`);
+  },
   listWorkItemAttention: (query: {
     projectId?: string; kind?: string; severity?: string; sla?: string;
     handler?: "mine" | "unclaimed"; includeResolved?: "1";
@@ -3069,10 +3085,10 @@ export const api = {
   disableChannel: (id: string) =>
     request("POST", `/api/channels/${encodeURIComponent(id)}/disable`, {}),
   retryChannelDelivery: (channelId: string, deliveryId: string, approvalToken: string) =>
-    request<{ deliveryId: string; status: string }>(
+    request<{ deliveryId: string; status: string; actionReceipt?: unknown; replayed?: boolean }>(
       "POST",
       `/api/channels/${encodeURIComponent(channelId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`,
-      { approvalToken },
+      { approvalToken, idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` },
     ),
   // Bind (projectId) or clear (null) the project /task files issues into, and the
   // auto-route mode. Approval-gated.
@@ -3081,7 +3097,17 @@ export const api = {
   // Promote a captured /task request into a tracked auto-run, or dismiss it.
   routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
   dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),
-  retryChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/retry`),
+  retryChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/retry`, {
+    idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+  }),
+  executeChannelTaskCommand: (id: string, kind: "fix_with_ai" | "rerun_verification" | "retry_delivery", requestBody: { feedback?: string; approvalToken?: string } = {}) =>
+    request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/commands`, {
+      kind,
+      request: {
+        ...requestBody,
+        idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      },
+    }),
   reconcileWechatDraftTask: (id: string, outcome: "confirmed_saved" | "confirmed_not_saved") =>
     request<{ ok: boolean; reconciled?: boolean; invocationId?: string }>(
       "POST",

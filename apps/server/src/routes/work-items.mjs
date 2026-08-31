@@ -29,7 +29,7 @@ function externalBindingEmergencyStopped(state, provider, repository, issueNumbe
 
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor, state,
-  listWorkItems, getCompletionMetrics, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+  listWorkItems, getCompletionMetrics, createCompletionMetricsBatch, listCompletionMetricsBatches, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
   reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
   refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
@@ -494,6 +494,16 @@ export async function handleWorkItemRoutes({
   }
   if (url.pathname === "/api/work-items/completion-metrics" && req.method === "GET") {
     const result = getCompletionMetrics(Object.fromEntries(url.searchParams), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/work-items/completion-metrics/batches" && req.method === "POST") {
+    const result = createCompletionMetricsBatch(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/work-items/completion-metrics/batches" && req.method === "GET") {
+    const result = listCompletionMetricsBatches(Object.fromEntries(url.searchParams), actor);
     sendJson(res, result.status, result.body);
     return true;
   }

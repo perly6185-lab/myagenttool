@@ -39,6 +39,33 @@ test("human task reply route passes bounded user content to its handler", async 
   assert.equal(response.body.content, "已确认，人工正在继续处理。");
 });
 
+test("task command route forwards one structured recovery command", async () => {
+  let response;
+  const actor = { userId: "usr_1", teamId: "team_1" };
+  const command = {
+    kind: "rerun_verification",
+    request: { idempotencyKey: "channel-command-once" },
+  };
+  const handled = await handleChannelRoutes({
+    req: { method: "POST" },
+    res: {},
+    url: new URL("http://local/api/channel-tasks/ctr_1/commands"),
+    sendJson: (_res, status, body) => { response = { status, body }; },
+    readJson: async () => command,
+    actor,
+    executeChannelTaskCommand: async (id, received, receivedActor) => ({
+      status: 200,
+      body: { ok: true, id, command: received, actor: receivedActor },
+    }),
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(response, {
+    status: 200,
+    body: { ok: true, id: "ctr_1", command, actor },
+  });
+});
+
 test("WeChat draft reconciliation route passes only the user's outcome to its handler", async () => {
   let response;
   const actor = { userId: "usr_1", teamId: "team_1" };

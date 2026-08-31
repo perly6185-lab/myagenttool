@@ -245,14 +245,15 @@ describe("TaskView local work items", () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
     mocks.getWorkItemCompletionMetrics.mockResolvedValue({
       generatedAt: "2026-08-28T00:00:00.000Z",
-      scope: { projectId: null, trackedWorkItems: 0, trackedAutoRuns: 0 },
+      scope: { projectId: null, origin: "all", trackedWorkItems: 0, trackedAutoRuns: 0, workItemIds: [] },
       metrics: {
-        schemaVersion: 1,
-        completion: { tracked: 0, settled: 0, completed: 0, falseCompletions: 0, requiringUserAction: 0, completionRate: null, falseCompletionRate: null, check: { status: "insufficient_data", target: 0.95 } },
-        recovery: { required: 0, succeeded: 0, pending: 0, successRate: null, check: { status: "insufficient_data", target: 0.95 } },
-        humanIntervention: { count: 0, rate: null, check: { status: "insufficient_data", target: 0.1 } },
+        schemaVersion: 2,
+        completion: { tracked: 0, settled: 0, completed: 0, falseCompletions: 0, requiringUserAction: 0, completionRate: null, falseCompletionRate: null, firstAttempt: { settled: 0, completed: 0, rate: null, check: { status: "insufficient_data", target: 0.8 } }, final: { settled: 0, completed: 0, rate: null, check: { status: "insufficient_data", target: 0.9 } }, check: { status: "insufficient_data", target: 0.9 } },
+        recovery: { required: 0, succeeded: 0, pending: 0, successRate: null, durationMs: { samples: 0, average: null, maximum: null }, check: { status: "insufficient_data", target: 0.9 } },
+        humanIntervention: { count: 0, rate: null, exceptionHandlingCount: 0, userInitiatedRecovery: { actions: 0, tasks: 0, rate: null }, check: { status: "insufficient_data", target: 0.15 } },
+        automaticRecovery: { actions: 0, tasks: 0, succeeded: 0, successRate: null },
         externalActions: { attempts: 0, duplicateCount: 0, unresolvedCount: 0, check: { status: "insufficient_data", target: 0 } },
-        acceptance: { status: "insufficient_data", checks: {} }, definitions: {},
+        acceptance: { status: "insufficient_data", checks: {} }, byCategory: {}, definitions: {},
       },
     });
     mocks.refreshWorkItemRecordBindingsBatch.mockResolvedValue({ refreshedCount: 0 });
