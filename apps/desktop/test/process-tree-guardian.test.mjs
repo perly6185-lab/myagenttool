@@ -14,7 +14,11 @@ test("process-tree guardian reaps a real node-pty when its Bridge parent disappe
   skip: !pty || (process.platform === "win32" && Boolean(process.env.CODEX_PERMISSION_PROFILE)),
   timeout: 10_000,
 }, async () => {
-  const child = pty.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  const command = process.platform === "win32" ? process.execPath : "/bin/sh";
+  const args = process.platform === "win32"
+    ? ["-e", "setInterval(() => {}, 1000)"]
+    : ["-c", "while :; do sleep 1; done"];
+  const child = pty.spawn(command, args, {
     name: "xterm-256color",
     cols: 80,
     rows: 24,
