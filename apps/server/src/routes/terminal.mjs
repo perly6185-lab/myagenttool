@@ -27,6 +27,9 @@ export async function handleTerminalRoutes({
   downloadHostFile,
   listHostTlsActivationProfiles,
   createHostTlsActivationProfile,
+  createHostRemediationPlan,
+  confirmHostRemediationPlan,
+  findHostRemediationPlan,
   createManagedTerminalSession,
   queueTerminalBridgeAction,
   nextTerminalBridgeAction,
@@ -394,6 +397,31 @@ export async function handleTerminalRoutes({
     }
     const result = await runSshHostDiagnosticRun(target, body.input, actor);
     sendJson(res, result.ok ? 200 : result.status, result.ok ? { run: result.run } : { error: result.error });
+    return true;
+  }
+
+  const hostRemediationPlanMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/remediation-plan$/);
+  if (req.method === "POST" && hostRemediationPlanMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostRemediationPlanMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const result = createHostRemediationPlan(target, await readJson(req), actor);
+    sendJson(res, result.ok ? (result.reused ? 200 : 201) : result.status, result.ok ? { plan: result.plan, reused: result.reused } : { error: result.error });
+    return true;
+  }
+
+  const hostRemediationConfirmMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/remediation-plans\/([^/]+)\/confirm$/);
+  if (req.method === "POST" && hostRemediationConfirmMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostRemediationConfirmMatch[1]));
+    const plan = target ? findHostRemediationPlan(target, decodeURIComponent(hostRemediationConfirmMatch[2]), actor) : null;
+    if (!target || !plan) {
+      sendJson(res, 404, { error: "host_remediation_plan_not_found" });
+      return true;
+    }
+    const result = await confirmHostRemediationPlan(target, plan, await readJson(req), actor);
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { plan: result.plan, reused: result.reused } : { error: result.error, ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}) });
     return true;
   }
 

@@ -353,6 +353,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // Fixed, non-shell TLS activation profiles. Container names and scope
     // references are durable; commands and credentials are never persisted.
     hostTlsActivationProfiles: [],
+    // Short-lived, revision-bound fixed remediation plans and their structured
+    // outcomes. Commands, remote output, addresses, and credentials stay out.
+    hostRemediationPlans: [],
     // Transfer metadata and audit status only. Uploaded/downloaded bytes are
     // intentionally never stored in the control-plane snapshot.
     hostFileTransfers: [],

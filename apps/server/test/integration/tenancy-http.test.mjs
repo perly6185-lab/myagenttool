@@ -813,6 +813,38 @@ test("My hosts API reuses SSH identity while keeping file-transfer hosts team sc
   assert.equal(publishScopes.body.scopes[0].host.id, hostId);
   assert.equal("credentialRef" in publishScopes.body.scopes[0].host, false);
 
+  const managedTarget = testState.sshTargets.find((item) => item.id === hostId);
+  Object.assign(managedTarget, {
+    connectionStatus: "ready",
+    trustStatus: "pinned",
+    knownHostFingerprint: `SHA256:${"A".repeat(43)}`,
+    agentForwarding: false,
+  });
+  testState.hostFileScopes.push({
+    id: "hfs_tls_team_b", ownerTeamId: TEAM_B, sshTargetId: hostId, label: "Website certificates",
+    purpose: "tls_certificate", rootPath: "/srv/tls/example", resolvedRootPath: "/srv/tls/example",
+    permissions: ["certificate_write"], status: "ready", revision: 1, lastResolvedAddress: "203.0.113.30", lastVerifiedAt: now(),
+  });
+  testState.hostTlsActivationProfiles.push({
+    id: "htp_team_b", ownerTeamId: TEAM_B, sshTargetId: hostId, certificateScopeId: "hfs_tls_team_b",
+    label: "Website service", type: "docker_nginx", containerName: "site-nginx", status: "ready", revision: 1,
+  });
+  const remediation = await call(`/api/hosts/${hostId}/assistant/remediation-plan`, {
+    token: "tok_b", method: "POST", body: { profileId: "htp_team_b" },
+  });
+  assert.equal(remediation.status, 201);
+  assert.equal(remediation.body.plan.action, "reload_managed_website");
+  assert.equal(JSON.stringify(remediation.body).includes("site-nginx"), false);
+  const foreignRemediation = await call(`/api/hosts/${hostId}/assistant/remediation-plan`, {
+    token: "tok_a", method: "POST", body: { profileId: "htp_team_b" },
+  });
+  assert.equal(foreignRemediation.status, 404);
+  const unconfirmedRemediation = await call(`/api/hosts/${hostId}/assistant/remediation-plans/${remediation.body.plan.id}/confirm`, {
+    token: "tok_b", method: "POST", body: { expectedRevision: remediation.body.plan.revision },
+  });
+  assert.equal(unconfirmedRemediation.status, 400);
+  assert.equal(unconfirmedRemediation.body.error, "host_remediation_confirmation_required");
+
   const unobservedConfirmation = await call(`/api/hosts/${hostId}/confirm-fingerprint`, {
     token: "tok_b", method: "POST", body: { expectedRevision: 2, fingerprint: "SHA256:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/ab" },
   });

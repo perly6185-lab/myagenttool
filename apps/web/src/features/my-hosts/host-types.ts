@@ -156,6 +156,31 @@ export interface HostDiagnosticRun {
   resolvedAddress?: string | null;
 }
 
+export type HostRemediationPlanStatus = "planned" | "running" | "completed" | "failed" | "outcome_unknown" | "expired";
+
+export interface HostRemediationResult {
+  outcome: "restored" | "not_changed" | "verification_incomplete";
+  changeAttempted: boolean;
+  verification: "passed" | "not_started" | "incomplete";
+  completedChecks: string[];
+  error?: string;
+}
+
+export interface HostRemediationPlan {
+  id: string;
+  sshTargetId: string;
+  profileId: string;
+  action: "reload_managed_website";
+  risk: "low";
+  status: HostRemediationPlanStatus;
+  checks: string[];
+  impact: "brief_connections_may_retry";
+  filesChanged: false;
+  revision: number;
+  expiresAt: string;
+  result: HostRemediationResult | null;
+}
+
 export type HostFileConflictPolicy = "deny" | "rename" | "replace";
 
 export interface HostFileTransfer {

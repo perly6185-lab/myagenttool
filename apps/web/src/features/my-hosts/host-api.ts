@@ -1,5 +1,5 @@
 import { ApiError, apiBase, csrfHeaders, ensureSession, request } from "@/lib/api/request";
-import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostDiagnosticRun, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResponse, HostFileTransfer, HostPurpose, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostDiagnosticRun, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResponse, HostFileTransfer, HostPurpose, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
 
 export const MAX_HOST_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -23,6 +23,10 @@ export const hostApi = {
     request<{ plan: HostDiagnosticPlan }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/plan`, { input }, true, 30_000),
   diagnoseIssue: (hostId: string, input: string) =>
     request<{ run: HostDiagnosticRun }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/diagnose`, { input, confirmed: true }, true, 180_000),
+  planRemediation: (hostId: string, profileId: string) =>
+    request<{ plan: HostRemediationPlan; reused: boolean }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plan`, { profileId }, true, 30_000),
+  confirmRemediation: (hostId: string, planId: string, expectedRevision: number) =>
+    request<{ plan: HostRemediationPlan; reused: boolean }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plans/${encodeURIComponent(planId)}/confirm`, { confirmed: true, expectedRevision }, true, 180_000),
   scopes: (hostId: string) =>
     request<{ scopes: HostFileScope[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes`),
   scopeSuggestions: (hostId: string) =>
