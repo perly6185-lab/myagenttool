@@ -360,6 +360,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // Immutable structured summaries for ordinary-user host diagnostic runs.
     // Raw command output, addresses, usernames, and log lines stay session-only.
     hostDiagnosticRuns: [],
+    // Persistent ordinary-user operations cases link incidents, structured
+    // intent, diagnostic summaries, and governed outcomes without raw input.
+    hostOperationsCases: [],
     // Short-lived, revision-bound fixed remediation plans and their structured
     // outcomes. Commands, remote output, addresses, and credentials stay out.
     hostRemediationPlans: [],

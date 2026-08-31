@@ -35,6 +35,10 @@ export async function handleTerminalRoutes({
   getHostHealthOverview,
   setHostHealthPolicy,
   checkHostHealthNow,
+  continueHostOperationsCase,
+  findHostOperationsCase,
+  listHostOperationsCases,
+  syncHostOperationsCaseRemediation,
   createManagedTerminalSession,
   queueTerminalBridgeAction,
   nextTerminalBridgeAction,
@@ -408,6 +412,44 @@ export async function handleTerminalRoutes({
     return true;
   }
 
+  const hostOperationsCasesMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/cases$/);
+  if (hostOperationsCasesMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostOperationsCasesMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    if (req.method === "GET") {
+      const cases = listHostOperationsCases(target, actor);
+      sendJson(res, 200, {
+        cases,
+        count: cases.length,
+        activeCase: cases.find((item) => ["checking", "diagnosed", "awaiting_confirmation", "changing"].includes(item.status)) ?? null,
+      });
+      return true;
+    }
+    if (req.method === "POST") {
+      const result = await continueHostOperationsCase(target, await readJson(req), actor);
+      sendJson(
+        res,
+        result.ok ? (result.reused ? 200 : 201) : result.status,
+        result.ok
+          ? { case: result.case, run: result.run, reused: result.reused }
+          : { error: result.error, ...(result.case ? { case: result.case } : {}) },
+      );
+      return true;
+    }
+  }
+
+  const hostOperationsCaseDetailMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/cases\/([^/]+)$/);
+  if (req.method === "GET" && hostOperationsCaseDetailMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostOperationsCaseDetailMatch[1]));
+    const item = target ? findHostOperationsCase(target, decodeURIComponent(hostOperationsCaseDetailMatch[2]), actor) : null;
+    if (!target || !item) sendJson(res, 404, { error: "host_operations_case_not_found" });
+    else sendJson(res, 200, { case: item });
+    return true;
+  }
+
   const hostRemediationPlanMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/remediation-plan$/);
   if (req.method === "POST" && hostRemediationPlanMatch) {
     const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostRemediationPlanMatch[1]));
@@ -416,6 +458,7 @@ export async function handleTerminalRoutes({
       return true;
     }
     const result = await createHostRemediationPlan(target, await readJson(req), actor);
+    if (result.ok) syncHostOperationsCaseRemediation(target, result.plan, actor);
     sendJson(res, result.ok ? (result.reused ? 200 : 201) : result.status, result.ok ? { plan: result.plan, reused: result.reused } : { error: result.error });
     return true;
   }
@@ -488,6 +531,7 @@ export async function handleTerminalRoutes({
       return true;
     }
     const result = await confirmHostRemediationPlan(target, plan, await readJson(req), actor);
+    if (result.ok) syncHostOperationsCaseRemediation(target, result.plan, actor);
     sendJson(res, result.ok ? 200 : result.status, result.ok ? { plan: result.plan, reused: result.reused } : { error: result.error, ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}) });
     return true;
   }
@@ -501,6 +545,7 @@ export async function handleTerminalRoutes({
       return true;
     }
     const result = await recheckHostRemediationPlan(target, plan, actor);
+    if (result.ok) syncHostOperationsCaseRemediation(target, result.plan, actor);
     sendJson(res, result.ok ? 200 : result.status, result.ok ? { plan: result.plan } : { error: result.error });
     return true;
   }

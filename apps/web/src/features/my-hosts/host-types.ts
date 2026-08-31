@@ -172,6 +172,38 @@ export interface HostDiagnosticRun {
   createdAt: string;
 }
 
+export type HostOperationsCaseStatus = "checking" | "diagnosed" | "awaiting_confirmation" | "changing" | "recovered" | "unresolved" | "needs_help";
+
+export interface HostOperationsCaseTimelineItem {
+  kind: "case_opened" | "diagnosis_completed" | "diagnosis_incomplete" | "device_changed" | "remediation_planned" | "remediation_started" | "remediation_completed" | "remediation_incomplete";
+  at: string;
+  deviceChanged: boolean;
+  diagnosticRunId?: string;
+  severity?: HostDiagnosticSeverity;
+  error?: string;
+  remediationPlanId?: string;
+}
+
+export interface HostOperationsCase {
+  id: string;
+  sshTargetId: string;
+  incidentId: string | null;
+  version: 1;
+  intent: HostDiagnosticRunIntent;
+  understanding: HostOperationsIntentUnderstanding;
+  status: HostOperationsCaseStatus;
+  nextStep: "wait_for_diagnosis" | "check_managed_website" | "review_supported_action" | "describe_remaining_symptom" | "review_incomplete_checks" | "review_findings" | "update_sign_in" | "confirm_device_identity" | "restore_connection" | "try_another_check" | "recheck_device_identity" | "confirm_governed_action" | "wait_for_verification" | "case_complete" | "recheck_outcome" | "review_manual_handoff";
+  diagnosticRunId: string | null;
+  remediationPlanId: string | null;
+  targetRevision: number;
+  deviceChanged: boolean;
+  lastError: string | null;
+  timeline: HostOperationsCaseTimelineItem[];
+  latestRun: HostDiagnosticRun | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type HostRemediationPlanStatus = "planned" | "running" | "not_needed" | "completed" | "completed_unresolved" | "failed" | "outcome_unknown" | "expired";
 
 export interface HostWebsiteHealthSummary {

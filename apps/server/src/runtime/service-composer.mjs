@@ -215,6 +215,7 @@ import { createHostTlsActivationProfileService } from "../services/host-tls-acti
 import { createHostRemediationService } from "../services/host-remediation.mjs";
 import { createPinnedWebsiteHealthChecker } from "../services/host-website-health.mjs";
 import { createHostHealthMonitorService } from "../services/host-health-monitor.mjs";
+import { createHostOperationsCaseService } from "../services/host-operations-cases.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
 import { createSiteCredentialVault } from "../services/site-credential-vault.mjs";
@@ -1325,6 +1326,15 @@ export function createServerRuntimeServices({
     persistStateSoon,
     resolveCredential: siteCredentialVault.resolveCredential,
     verifySshHostConnection,
+    runSshHostDiagnosticRun,
+    store,
+  });
+  const hostOperationsCaseService = createHostOperationsCaseService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
     runSshHostDiagnosticRun,
     store,
   });
@@ -8225,6 +8235,10 @@ export function createServerRuntimeServices({
     setHostHealthPolicy: hostHealthMonitorService.setPolicy,
     checkHostHealthNow: hostHealthMonitorService.checkNow,
     hostHealthSweep: hostHealthMonitorService.sweepDue,
+    continueHostOperationsCase: hostOperationsCaseService.continueCase,
+    findHostOperationsCase: hostOperationsCaseService.findCase,
+    listHostOperationsCases: hostOperationsCaseService.listCases,
+    syncHostOperationsCaseRemediation: hostOperationsCaseService.syncRemediation,
     createManagedTerminalSession,
     queueTerminalBridgeAction,
     nextTerminalBridgeAction,

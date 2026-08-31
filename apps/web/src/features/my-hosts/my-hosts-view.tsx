@@ -37,10 +37,10 @@ import { ApiError } from "@/lib/api/request";
 import { useUiStore } from "@/store/ui-store";
 import { MAX_HOST_DOWNLOAD_BYTES, MAX_HOST_UPLOAD_BYTES, hostApi } from "./host-api";
 import { HOST_DIAGNOSTIC_QUICK_ACTIONS, hostDiagnosticPlan, hostDiagnosticPlanCopy, hostDiagnosticSummaryCopy, parseHostLoginAuditEvents, suggestHostDiagnostic } from "./host-assistant";
-import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticResult, HostDiagnosticRun, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResult, HostFileTransfer, HostHealthIncident, HostHealthSnapshot, HostOperationsIntentUnderstanding, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticResult, HostDiagnosticRun, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResult, HostFileTransfer, HostHealthIncident, HostHealthSnapshot, HostOperationsCase, HostOperationsIntentUnderstanding, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
 
 type DetailTab = "overview" | "files" | "transfers" | "settings";
-type HostAssistantRequest = { id: number; hostId: string; question: string };
+type HostAssistantRequest = { id: number; hostId: string; question: string; incidentId?: string | null };
 
 function errorText(error: unknown, zh: boolean) {
   const code = error instanceof ApiError ? error.code : "";
@@ -213,7 +213,7 @@ function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host
   const [assistantRequest, setAssistantRequest] = useState<HostAssistantRequest | null>(null);
   const investigate = (incident: HostHealthIncident) => {
     requestSequence.current += 1;
-    setAssistantRequest({ id: requestSequence.current, hostId: host.id, question: hostIncidentQuestion(incident, zh) });
+    setAssistantRequest({ id: requestSequence.current, hostId: host.id, question: hostIncidentQuestion(incident, zh), incidentId: incident.id });
   };
   return <div className="space-y-4">
     <div className="grid gap-3 sm:grid-cols-3">
@@ -223,8 +223,9 @@ function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host
     </div>
     {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div className="min-w-0 flex-1"><p className="text-sm font-medium">{recovery.title}</p><p className="mt-1 text-xs text-muted-foreground">{recovery.detail}</p></div><Button onClick={() => onContinue(recovery.allowPrivate ? { allowPrivate: true } : undefined)}>{recovery.action}<ChevronRight /></Button></div> : null}
     {professional && host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
-    <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} onInvestigate={investigate} />
+    {professional ? <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} onInvestigate={investigate} /> : null}
     <HostAssistant host={host} zh={zh} professional={professional} onRepairCredential={onContinue} request={assistantRequest} />
+    {!professional ? <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} onInvestigate={investigate} /> : null}
   </div>;
 }
 
@@ -335,6 +336,12 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
   const [message, setMessage] = useState<string | null>(null);
   const [credentialRepairNeeded, setCredentialRepairNeeded] = useState(false);
   const handledRequestKey = useRef<string | null>(null);
+  const operationsCases = useQuery({
+    queryKey: ["host-operations-cases", host.id],
+    queryFn: () => hostApi.operationCases(host.id),
+    enabled: !professional && host.connectionStatus === "ready",
+  });
+  const activeCase = operationsCases.data?.activeCase ?? null;
   const choose = (next: NonNullable<typeof plan>) => { setPlan(next); setResult(null); setRun(null); setRemediation(null); setMessage(null); setCredentialRepairNeeded(false); };
   const mutation = useMutation({
     mutationFn: (next: NonNullable<typeof plan>) => next.parameters ? hostApi.diagnose(host.id, next.action, next.parameters) : hostApi.diagnose(host.id, next.action),
@@ -363,9 +370,9 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
     },
   });
   const runMutation = useMutation({
-    mutationFn: (question: string) => hostApi.diagnoseIssue(host.id, question),
+    mutationFn: ({ question, incidentId }: { question: string; incidentId?: string | null }) => hostApi.diagnoseCase(host.id, question, incidentId),
     onMutate: () => { setRun(null); setPlan(null); setResult(null); setRemediation(null); setMessage(null); setCredentialRepairNeeded(false); },
-    onSuccess: (response) => { setRun(response.run); setPlan(null); setResult(null); setMessage(null); },
+    onSuccess: (response) => { setRun(response.run ?? response.case.latestRun); setPlan(null); setResult(null); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-operations-cases", host.id] }); },
     onError: (error) => {
       setRun(null);
       setMessage(diagnosticFailureText(error, zh, professional));
@@ -374,7 +381,8 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
       if (repairNeeded) void queryClient.invalidateQueries({ queryKey: ["my-hosts"] });
     },
   });
-  const remediationEligible = !professional && run?.intent === "website";
+  const effectiveRun = run ?? activeCase?.latestRun ?? null;
+  const remediationEligible = !professional && effectiveRun?.intent === "website";
   const remediationProfiles = useQuery({
     queryKey: ["my-host-tls-profiles", host.id],
     queryFn: () => hostApi.tlsProfiles(host.id),
@@ -386,18 +394,18 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
     enabled: !professional && host.connectionStatus === "ready",
   });
   const remediationPlanMutation = useMutation({
-    mutationFn: (profileId: string) => hostApi.planRemediation(host.id, profileId, run!.id),
-    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); },
+    mutationFn: (profileId: string) => hostApi.planRemediation(host.id, profileId, effectiveRun!.id),
+    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); void queryClient.invalidateQueries({ queryKey: ["host-operations-cases", host.id] }); },
     onError: (error) => { setRemediation(null); setMessage(remediationFailureText(error, zh)); },
   });
   const remediationConfirmMutation = useMutation({
     mutationFn: (next: HostRemediationPlan) => hostApi.confirmRemediation(host.id, next.id, next.revision),
-    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); },
+    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); void queryClient.invalidateQueries({ queryKey: ["host-operations-cases", host.id] }); },
     onError: (error) => setMessage(remediationFailureText(error, zh)),
   });
   const remediationRecheckMutation = useMutation({
     mutationFn: (next: HostRemediationPlan) => hostApi.recheckRemediation(host.id, next.id),
-    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); },
+    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); void queryClient.invalidateQueries({ queryKey: ["host-operations-cases", host.id] }); },
     onError: (error) => setMessage(remediationFailureText(error, zh)),
   });
   useEffect(() => { setInput(""); setPlan(null); setResult(null); setRun(null); setRemediation(null); setMessage(null); setCredentialRepairNeeded(false); }, [host.id]);
@@ -409,25 +417,26 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
     handledRequestKey.current = requestKey;
     setInput(request.question);
     if (professional) planMutation.mutate(request.question);
-    else runMutation.mutate(request.question);
+    else runMutation.mutate({ question: request.question, incidentId: request.incidentId });
   }, [host.id, professional, ready, request]);
   const busy = planMutation.isPending || mutation.isPending || runMutation.isPending || remediationPlanMutation.isPending || remediationConfirmMutation.isPending || remediationRecheckMutation.isPending;
   const submit = () => {
     if (!input.trim() || busy) return;
     if (professional) planMutation.mutate(input.trim());
-    else runMutation.mutate(input.trim());
+    else runMutation.mutate({ question: input.trim() });
   };
   const planCopy = plan ? hostDiagnosticPlanCopy(plan, zh) : null;
   return <div className="rounded-lg border bg-card p-4" data-testid="host-assistant">
     <div className="flex flex-wrap items-start gap-3"><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Bot className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{zh ? "问问 AI" : "Ask AI"}</p>{professional ? <StatusBadge tone="neutral"><Sparkles className="size-3" />{zh ? "只读检查" : "Read-only checks"}</StatusBadge> : <StatusBadge tone="success"><Sparkles className="size-3" />{zh ? "设备助手" : "Device assistant"}</StatusBadge>}</div><p className="mt-1 text-xs text-muted-foreground">{professional ? (zh ? "说出你遇到的问题。助手会先展示固定检查计划，确认后执行。" : "Describe the problem. The assistant shows a fixed inspection plan before it runs.") : (zh ? "直接问这台设备的空间、内存、程序、网络或最近登录情况。" : "Ask about this device's storage, memory, apps, network, or recent sign-ins.")}</p></div></div>
+    {!professional && activeCase ? <HostOperationsCasePanel item={activeCase} zh={zh} /> : null}
     <div className="mt-4 flex flex-col gap-2 sm:flex-row"><Input disabled={busy} value={input} placeholder={professional ? (zh ? "例如：看看磁盘还剩多少空间" : "For example: show remaining disk space") : (zh ? "例如：最近有谁登录过？" : "For example: who signed in recently?")} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submit(); }} /><Button variant="secondary" disabled={!input.trim() || !ready || busy} onClick={submit}>{busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{professional ? (zh ? "生成建议" : "Suggest") : (zh ? "查看" : "Ask")}</Button></div>
-    <div className="mt-3 flex flex-wrap gap-2">{!professional ? <Button size="sm" variant="secondary" disabled={!ready || busy} onClick={() => runMutation.mutate(zh ? "全面检查这台设备" : "Run an overall health check")}><Sparkles />{zh ? "全面体检" : "Full check"}</Button> : null}{HOST_DIAGNOSTIC_QUICK_ACTIONS.map((item) => <Button key={item.action} size="sm" variant="ghost" disabled={!ready || busy} onClick={() => selectAction(hostDiagnosticPlan(item.action))}>{professional ? hostDiagnosticPlanCopy(item, zh).title : ordinaryDiagnosticLabel(item.action, zh)}</Button>)}</div>
+    <div className="mt-3 flex flex-wrap gap-2">{!professional ? <Button size="sm" variant="secondary" disabled={!ready || busy} onClick={() => runMutation.mutate({ question: zh ? "全面检查这台设备" : "Run an overall health check" })}><Sparkles />{zh ? "全面体检" : "Full check"}</Button> : null}{HOST_DIAGNOSTIC_QUICK_ACTIONS.map((item) => <Button key={item.action} size="sm" variant="ghost" disabled={!ready || busy} onClick={() => selectAction(hostDiagnosticPlan(item.action))}>{professional ? hostDiagnosticPlanCopy(item, zh).title : ordinaryDiagnosticLabel(item.action, zh)}</Button>)}</div>
     {!ready ? <p className="mt-3 rounded-lg bg-warning/10 p-3 text-xs text-muted-foreground">{zh ? "请先完成主机连接验证，助手才会访问设备。" : "Complete host connection verification before the assistant can access this device."}</p> : null}
     {professional && plan && planCopy && !result ? <div className="mt-4 space-y-3 rounded-lg border border-primary/25 bg-primary/[0.04] p-3"><div><p className="text-sm font-medium">{planCopy.title}</p><p className="mt-1 text-xs text-muted-foreground">{planCopy.explanation}</p></div><div className="rounded-md bg-muted p-3 text-sm"><span className="text-xs text-muted-foreground">{zh ? "将检查" : "Will check"}</span><p className="mt-1 font-medium">{planCopy.check}</p></div><code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{plan.command || (zh ? "需要先指定服务名称" : "Specify a service name first")}</code><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{zh ? "只读 · 不会上传、删除、清理或重启服务" : "Read-only · no upload, deletion, cleanup, or service restart"}</span><Button disabled={!ready || !plan.command || mutation.isPending} onClick={() => mutation.mutate(plan)}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "确认并执行" : "Confirm and run"}</Button></div></div> : null}
     {!professional && (mutation.isPending || runMutation.isPending) ? <div className="mt-4 flex items-center gap-2 rounded-lg bg-primary/[0.06] p-3 text-sm"><Loader2 className="size-4 animate-spin text-primary" />{runMutation.isPending ? (zh ? "正在综合检查这台设备…" : "Running a combined device check…") : (zh ? "正在查看这台设备…" : "Checking this device…")}</div> : null}
     {message ? <div role="alert" className="mt-3 flex flex-wrap items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" /><p className="min-w-0 flex-1">{message}</p>{credentialRepairNeeded && ready ? <Button size="sm" variant="secondary" onClick={onRepairCredential}><KeyRound />{zh ? "重新输入登录信息" : "Update sign-in details"}</Button> : null}</div> : null}
     {result ? <div className="mt-4"><div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground"><CheckCircle2 className="size-4 text-primary" />{professional ? (zh ? "检查结果（仅本次会话保留技术输出）" : "Check result (technical output is session-only)") : (zh ? "AI 已查看这台设备" : "AI checked this device")}</div><DiagnosticSummaryPanel summary={result.summary} zh={zh} professional={professional} />{!professional && result.action === "ssh_login_audit" ? <LoginAuditPanel output={result.output} zh={zh} /> : null}{professional ? <details className="mt-3 rounded-lg border p-3" open><summary className="cursor-pointer text-xs font-medium">{zh ? "技术证据" : "Technical evidence"}</summary><div className="mt-3 space-y-2"><code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{result.command}</code>{result.resolvedAddress ? <p className="break-all text-xs text-muted-foreground">{zh ? "本次连接地址" : "Connection address"}: {result.resolvedAddress}</p> : null}<pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs leading-5">{result.output || (zh ? "设备没有返回原始输出。" : "The device returned no raw output.")}</pre><p className="text-xs text-muted-foreground">{zh ? "原始输出只在本次页面会话显示，不写入诊断审计。" : "Raw output is shown only in this page session and is not written to diagnostic audit records."}</p></div></details> : null}</div> : null}
-    {run ? <DiagnosticRunPanel run={run} zh={zh} professional={professional} /> : null}
+    {effectiveRun ? <DiagnosticRunPanel run={effectiveRun} zh={zh} professional={professional} /> : null}
     {remediationEligible && remediationProfiles.data?.profiles.length ? <HostRemediationPanel
       profiles={remediationProfiles.data.profiles}
       plan={remediation}
@@ -442,6 +451,42 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
     {remediationEligible && remediationProfiles.error ? <div role="alert" className="mt-4 rounded-lg border border-warning/30 bg-warning/10 p-3"><p className="text-sm font-medium">{zh ? "暂时无法确认是否有安全处理方案" : "Repair availability could not be confirmed"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "设备没有被修改。可以稍后重新检查，或到“我的站点”的专业设置确认托管服务。" : "The device was not changed. Check again later or verify the managed service in My Sites Professional settings."}</p></div> : null}
     {remediationEligible && !remediationProfiles.isLoading && !remediationProfiles.error && !remediationProfiles.data?.profiles.length ? <div className="mt-4 rounded-lg border border-warning/30 bg-warning/10 p-3" data-testid="host-remediation-unavailable"><p className="text-sm font-medium">{zh ? "这台设备还没有可安全处理的网站服务" : "No safely managed website service is configured"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "主机侧只读检查已经完成，但助手不会猜测要重载哪个服务。请先在“我的站点”的专业设置中绑定已验证主机、HTTPS 和托管服务。" : "The read-only host check is complete, but the assistant will not guess which service to reload. First bind a verified host, HTTPS, and managed service in My Sites Professional settings."}</p></div> : null}
     {!professional && remediationHistory.data?.plans.length ? <HostRemediationHistory plans={remediationHistory.data.plans} zh={zh} rechecking={remediationRecheckMutation.isPending} onRecheck={(next) => remediationRecheckMutation.mutate(next)} /> : null}
+  </div>;
+}
+
+function HostOperationsCasePanel({ item, zh }: { item: HostOperationsCase; zh: boolean }) {
+  const statusCopy: Record<HostOperationsCase["status"], readonly [string, string]> = {
+    checking: ["正在检查这件事", "Checking this issue"],
+    diagnosed: ["这件事已有检查结果", "This issue has a check result"],
+    awaiting_confirmation: ["等待你确认处理", "Waiting for your confirmation"],
+    changing: ["正在按确认内容处理", "Applying the confirmed action"],
+    recovered: ["这件事已经恢复", "This issue is resolved"],
+    unresolved: ["这件事尚未恢复", "This issue is not resolved"],
+    needs_help: ["这件事需要继续处理", "This issue needs follow-up"],
+  };
+  const nextCopy: Record<HostOperationsCase["nextStep"], readonly [string, string]> = {
+    wait_for_diagnosis: ["等待本次只读检查完成。", "Wait for the current read-only check to finish."],
+    check_managed_website: ["下一步检查真实网站；确认异常后才会展示受控处理方案。", "Next, check the real website. A governed action is shown only after the problem is confirmed."],
+    review_supported_action: ["检查已经完成；只有现有安全方案可处理时，才会单独请你确认。", "The check is complete. You will be asked separately only when an existing safe action applies."],
+    describe_remaining_symptom: ["检查没有发现明显问题。如果问题仍在，请说明你现在看到的具体表现。", "No obvious issue was found. If the problem remains, describe exactly what you see now."],
+    review_incomplete_checks: ["部分检查没有完成，请先查看结果，再决定是否换一种检查。", "Some checks did not finish. Review the result before trying a different check."],
+    review_findings: ["先查看最重要的发现，再按下面唯一可用的安全步骤继续。", "Review the most important finding, then continue with the single safe step below."],
+    update_sign_in: ["重新准备这台设备的登录信息，然后继续检查。", "Prepare this device's sign-in details, then continue the check."],
+    confirm_device_identity: ["先确认仍是同一台设备；尚未修改设备。", "Confirm that this is still the same device. The device was not changed."],
+    restore_connection: ["设备恢复在线后继续；尚未修改设备。", "Continue after the device is back online. The device was not changed."],
+    try_another_check: ["本次检查没有完成，可以换一项固定检查继续。", "This check did not finish. Continue with another fixed check."],
+    recheck_device_identity: ["设备连接信息已经变化，请重新确认后开始新的检查。", "The device connection changed. Confirm it again before starting a new check."],
+    confirm_governed_action: ["已有目标唯一、可复查的处理方案；查看影响后由你确认一次。", "A uniquely targeted, verifiable action is ready. Review its impact and confirm it once."],
+    wait_for_verification: ["正在执行已确认的处理并复查结果，请不要重复操作。", "The confirmed action is running and being verified. Do not repeat it."],
+    case_complete: ["处理结果已经复查确认，这件事可以结束。", "The outcome was verified. This issue is complete."],
+    recheck_outcome: ["结果还不能确认，下一步只重新检查，不重复执行处理。", "The outcome is not confirmed. Recheck only; do not repeat the action."],
+    review_manual_handoff: ["现有安全能力无法继续，请查看可交接说明；不会尝试任意命令。", "The available safe actions cannot continue. Review the handoff guidance; no arbitrary command will be attempted."],
+  };
+  const tone = item.status === "recovered" ? "success" : ["unresolved", "needs_help"].includes(item.status) ? "warning" : "neutral";
+  return <div className="mt-4 rounded-lg border border-primary/20 bg-primary/[0.04] p-3" data-testid="host-operations-case">
+    <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs text-muted-foreground">{zh ? "正在处理的一件事" : "Current issue"}</p><p className="mt-1 text-sm font-medium">{statusCopy[item.status][zh ? 0 : 1]}</p></div><StatusBadge tone={tone}>{item.deviceChanged ? (zh ? "设备已修改" : "Device changed") : (zh ? "尚未修改设备" : "Device unchanged")}</StatusBadge></div>
+    <p className="mt-2 text-xs text-muted-foreground">{nextCopy[item.nextStep][zh ? 0 : 1]}</p>
+    <p className="mt-2 text-xs text-muted-foreground">{zh ? `最近更新：${new Date(item.updatedAt).toLocaleString("zh-CN")}` : `Last updated: ${new Date(item.updatedAt).toLocaleString("en-US")}`}</p>
   </div>;
 }
 

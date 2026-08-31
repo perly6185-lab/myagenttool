@@ -239,6 +239,7 @@ export const persistedArrayKeys = [
   "hostFileScopes",
   "hostTlsActivationProfiles",
   "hostDiagnosticRuns",
+  "hostOperationsCases",
   "hostRemediationPlans",
   "hostHealthPolicies",
   "hostHealthSnapshots",

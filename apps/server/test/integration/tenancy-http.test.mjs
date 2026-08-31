@@ -800,6 +800,12 @@ test("My hosts API reuses SSH identity while keeping file-transfer hosts team sc
   assert.equal(health.body.latestSnapshot, null);
   const foreignHealth = await call(`/api/hosts/${hostId}/health`, { token: "tok_a" });
   assert.equal(foreignHealth.status, 404);
+  const operationsCases = await call(`/api/hosts/${hostId}/assistant/cases`, { token: "tok_b" });
+  assert.equal(operationsCases.status, 200);
+  assert.deepEqual(operationsCases.body.cases, []);
+  assert.equal(operationsCases.body.activeCase, null);
+  const foreignOperationsCases = await call(`/api/hosts/${hostId}/assistant/cases`, { token: "tok_a" });
+  assert.equal(foreignOperationsCases.status, 404);
   const monitoring = await call(`/api/hosts/${hostId}/health/monitoring`, {
     token: "tok_b", method: "PATCH", body: { enabled: true, cadence: "daily" },
   });

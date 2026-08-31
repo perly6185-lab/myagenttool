@@ -43,6 +43,7 @@ async function mockOrdinaryHostApi(page: Page, fixture: {
   transfers?: Array<Record<string, unknown>>;
   health?: Record<string, unknown>;
   diagnosticRun?: Record<string, unknown>;
+  operationCase?: Record<string, unknown> | null;
 } = {}) {
   const currentHost = fixture.host ?? host;
   const currentScope = fixture.scope === undefined ? scope : fixture.scope;
@@ -57,6 +58,7 @@ async function mockOrdinaryHostApi(page: Page, fixture: {
       policy: { enabled: false, cadence: "daily", nextRunAt: null, lastRunAt: null, lastRunStatus: null, revision: 0 },
       latestSnapshot: null, snapshots: [], incidents: [], openIncidentCount: 0,
     } });
+    if (path === `/api/hosts/${currentHost.id}/assistant/cases`) return route.fulfill({ json: { cases: fixture.operationCase ? [fixture.operationCase] : [], count: fixture.operationCase ? 1 : 0, activeCase: fixture.operationCase ?? null } });
     if (path === `/api/hosts/${currentHost.id}/assistant/remediation-plans`) return route.fulfill({ json: { plans: [], count: 0 } });
     if (path === `/api/hosts/${currentHost.id}/assistant/diagnose` && fixture.diagnosticRun) return route.fulfill({ json: { run: fixture.diagnosticRun } });
     if (path === `/api/hosts/${currentHost.id}/file-scopes`) return route.fulfill({ json: { scopes: currentScope ? [currentScope] : [], count: currentScope ? 1 : 0 } });
@@ -293,7 +295,7 @@ test("ordinary host diagnosis runs directly and hides technical evidence at 320 
   await page.getByRole("button", { name: "磁盘空间" }).click();
   await expect(page.getByRole("button", { name: "确认检查" })).toHaveCount(0);
 
-  await expect(page.getByText("设备空间严重不足")).toBeVisible();
+  await expect(page.getByText("设备空间严重不足", { exact: true })).toBeVisible();
   await expect(page.getByText(/上传、保存或发布文件可能失败/)).toBeVisible();
   await expect(page.getByText(/先清理一些设备空间，然后重试/)).toBeVisible();
   await expect(page.getByTestId("diagnostic-summary").getByText("95%", { exact: true })).toBeVisible();
@@ -303,6 +305,36 @@ test("ordinary host diagnosis runs directly and hides technical evidence at 320 
   await page.setViewportSize({ width: 320, height: 900 });
   await page.getByText("设备空间严重不足").scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath("my-hosts-ai-diagnosis-320.png") });
+});
+
+test("ordinary owners resume one host issue after reopening the app", async ({ page }, testInfo) => {
+  const restoredRun = {
+    id: "hdr_restored", targetRevision: host.revision, createdAt: "2026-08-30T08:00:00.000Z", version: 1, intent: "performance", risk: "read_only", primaryAction: "disk_usage",
+    understanding: { version: 1, goal: "improve", domain: "performance", symptom: "slow", desiredOutcome: "improve_performance", requestedChange: "none", handling: "read_only_diagnosis", confidence: "high" },
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
+    steps: [{ action: "disk_usage", status: "completed", summary: { version: 1, severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space", facts: [{ key: "disk_used_percent", value: "95%", severity: "critical" }] } }],
+  };
+  const operationCase = {
+    id: "hoc_restored", sshTargetId: host.id, incidentId: null, version: 1, intent: restoredRun.intent, understanding: restoredRun.understanding,
+    status: "diagnosed", nextStep: "review_findings", diagnosticRunId: restoredRun.id, remediationPlanId: null, targetRevision: host.revision,
+    deviceChanged: false, lastError: null, timeline: [{ kind: "case_opened", at: restoredRun.createdAt, deviceChanged: false }, { kind: "diagnosis_completed", at: restoredRun.createdAt, deviceChanged: false, diagnosticRunId: restoredRun.id, severity: "warning" }],
+    latestRun: restoredRun, createdAt: restoredRun.createdAt, updatedAt: restoredRun.createdAt,
+  };
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({ state: { locale: "zh-CN", section: "myHosts", experienceMode: "ordinary" }, version: 1 }));
+  });
+  await mockOrdinaryHostApi(page, { operationCase });
+  await page.goto("/?section=myHosts");
+
+  await expect(page.getByText("正在处理的一件事")).toBeVisible();
+  await expect(page.getByText("这件事已有检查结果")).toBeVisible();
+  await expect(page.getByText("尚未修改设备")).toBeVisible();
+  await expect(page.getByText("综合检查完成 · 1/1 项")).toBeVisible();
+  await expect(page.getByText("设备空间严重不足", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.getByTestId("host-operations-case").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("my-hosts-resumed-case-390.png") });
 });
 
 test("ordinary owners see recent sign-ins as readable activity at 320 px", async ({ page }, testInfo) => {
