@@ -1,5 +1,6 @@
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { deduplicateHostFileScopes, MAX_HOST_UPLOAD_BYTES } from "../services/host-files.mjs";
+import { summarizeHostOperationsMetrics } from "../services/host-operations-metrics.mjs";
 
 export async function handleTerminalRoutes({
   req,
@@ -439,6 +440,22 @@ export async function handleTerminalRoutes({
       );
       return true;
     }
+  }
+
+  const hostOperationsMetricsMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/metrics$/);
+  if (req.method === "GET" && hostOperationsMetricsMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostOperationsMetricsMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    sendJson(res, 200, {
+      metrics: summarizeHostOperationsMetrics({
+        cases: listHostOperationsCases(target, actor, { limit: null }),
+        remediationPlans: listHostRemediationPlans(target, actor, { limit: null }),
+      }),
+    });
+    return true;
   }
 
   const hostOperationsCaseDetailMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/cases\/([^/]+)$/);

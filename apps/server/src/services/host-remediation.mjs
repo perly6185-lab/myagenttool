@@ -163,12 +163,12 @@ export function createHostRemediationService({
       && item.createdByUserId === (actor?.userId ?? "usr_local")) ?? null;
   }
 
-  function listPlans(target, actor = null) {
-    return state.hostRemediationPlans.filter((item) => item.sshTargetId === target.id
+  function listPlans(target, actor = null, { limit = 20 } = {}) {
+    const plans = state.hostRemediationPlans.filter((item) => item.sshTargetId === target.id
       && item.ownerTeamId === target.ownerTeamId
       && item.createdByUserId === (actor?.userId ?? "usr_local"))
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, 20);
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return (limit == null ? plans : plans.slice(0, limit));
   }
 
   async function createPlan(target, body = {}, actor = null) {

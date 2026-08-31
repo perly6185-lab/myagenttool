@@ -16,8 +16,9 @@ function harness() {
     nextId: (prefix) => `${prefix}_${sequence++}`,
     appendEvent: (event) => events.push(event),
     persistStateSoon: () => {},
-    runSshHostDiagnosticRun: async (currentTarget, input) => {
+    runSshHostDiagnosticRun: async (currentTarget, input, currentActor, options = {}) => {
       diagnosticCalls += 1;
+      const plan = options.plan ?? { intent: input.includes("网站") ? "website" : "health", understanding: { version: 1, goal: "restore", domain: input.includes("网站") ? "website" : "device", symptom: "unavailable", desiredOutcome: "restore_availability", requestedChange: "none", handling: "read_only_diagnosis", confidence: "high" } };
       const run = {
         id: `hdr_${diagnosticCalls}`,
         ownerTeamId: currentTarget.ownerTeamId,
@@ -25,8 +26,8 @@ function harness() {
         sshTargetId: currentTarget.id,
         targetRevision: currentTarget.revision,
         version: 1,
-        intent: input.includes("网站") ? "website" : "health",
-        understanding: { version: 1, goal: "restore", domain: input.includes("网站") ? "website" : "device", symptom: "unavailable", desiredOutcome: "restore_availability", requestedChange: "none", handling: "read_only_diagnosis", confidence: "high" },
+        intent: plan.intent,
+        understanding: plan.understanding,
         risk: "read_only",
         steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "warning", finding: "failed_services_found", impact: "service_availability_may_be_affected", nextAction: "review_failed_services", facts: [] } }],
         summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
@@ -62,6 +63,52 @@ test("persists a bounded host operations case and reuses the same structured int
   assert.equal(restored.length, 1);
   assert.equal(restored[0].latestRun.id, "hdr_1");
   assert.equal(restored[0].timeline.at(-1).kind, "diagnosis_completed");
+});
+
+test("resumes an interrupted checking case from its durable structured plan", async () => {
+  const h = harness();
+  const interrupted = {
+    id: "hoc_interrupted",
+    ownerTeamId: h.target.ownerTeamId,
+    createdByUserId: h.actor.userId,
+    sshTargetId: h.target.id,
+    version: 1,
+    incidentId: null,
+    intent: "website",
+    intentKey: "website:restore:website:unavailable:restore_availability:none:read_only_diagnosis",
+    understanding: { version: 1, goal: "restore", domain: "website", symptom: "unavailable", desiredOutcome: "restore_availability", requestedChange: "none", handling: "read_only_diagnosis", confidence: "high" },
+    diagnosticPlan: { version: 1, intent: "website", understanding: { version: 1, goal: "restore", domain: "website", symptom: "unavailable", desiredOutcome: "restore_availability", requestedChange: "none", handling: "read_only_diagnosis", confidence: "high" }, steps: [{ action: "network_info", parameters: {} }] },
+    status: "checking",
+    nextStep: "wait_for_diagnosis",
+    diagnosticRunId: null,
+    remediationPlanId: null,
+    targetRevision: h.target.revision,
+    deviceChanged: false,
+    lastError: null,
+    timeline: [{ kind: "case_opened", at: "2026-08-31T00:00:00.000Z", deviceChanged: false }],
+    createdAt: "2026-08-31T00:00:00.000Z",
+    updatedAt: "2026-08-31T00:00:00.000Z",
+  };
+  h.state.hostOperationsCases.push(interrupted);
+
+  const resumed = await h.service().continueCase(h.target, { caseId: interrupted.id }, h.actor);
+
+  assert.equal(resumed.ok, true);
+  assert.equal(resumed.reused, false);
+  assert.equal(resumed.case.id, interrupted.id);
+  assert.equal(resumed.case.status, "diagnosed");
+  assert.equal(resumed.case.latestRun.id, "hdr_1");
+  assert.equal(h.calls(), 1);
+});
+
+test("does not let a resume request replace the case intent", async () => {
+  const h = harness();
+  const first = await h.service().continueCase(h.target, { input: "网站打不开" }, h.actor);
+  const result = await h.service().continueCase(h.target, { caseId: first.case.id, input: "全面检查这台设备" }, h.actor);
+
+  assert.deepEqual(result, { ok: false, status: 400, error: "host_operations_case_input_conflict" });
+  assert.equal(h.calls(), 1);
+  assert.equal(h.state.hostOperationsCases[0].intent, "website");
 });
 
 test("hides cases across users and starts a new case after the host revision changes", async () => {

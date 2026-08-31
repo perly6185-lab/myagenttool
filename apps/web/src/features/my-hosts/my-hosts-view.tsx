@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowDownToLine,
   ArrowUpFromLine,
+  BarChart3,
   Bot,
   CheckCircle2,
   ChevronRight,
@@ -14,6 +15,7 @@ import {
   FileText,
   Folder,
   FolderLock,
+  History,
   KeyRound,
   Loader2,
   Plus,
@@ -224,9 +226,26 @@ function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host
     {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div className="min-w-0 flex-1"><p className="text-sm font-medium">{recovery.title}</p><p className="mt-1 text-xs text-muted-foreground">{recovery.detail}</p></div><Button onClick={() => onContinue(recovery.allowPrivate ? { allowPrivate: true } : undefined)}>{recovery.action}<ChevronRight /></Button></div> : null}
     {professional && host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
     {professional ? <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} onInvestigate={investigate} /> : null}
+    {professional ? <HostOperationsMetricsPanel hostId={host.id} zh={zh} /> : null}
     <HostAssistant host={host} zh={zh} professional={professional} onRepairCredential={onContinue} request={assistantRequest} />
     {!professional ? <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} onInvestigate={investigate} /> : null}
   </div>;
+}
+
+function HostOperationsMetricsPanel({ hostId, zh }: { hostId: string; zh: boolean }) {
+  const metrics = useQuery({ queryKey: ["host-operations-metrics", hostId], queryFn: () => hostApi.operationMetrics(hostId) });
+  const value = metrics.data?.metrics ?? null;
+  const percent = (rate: number | null) => rate == null ? "—" : `${Math.round(rate * 100)}%`;
+  return <div className="rounded-lg border bg-card p-4" data-testid="host-operations-metrics">
+    <div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><BarChart3 className="size-5" /></span><div><p className="text-sm font-medium">{zh ? "处置单试用观察" : "Operations pilot view"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "只读汇总已发生的处置单，不改变当前处理流程。" : "Read-only aggregates of completed operations; this does not change the current workflow."}</p></div></div>
+    {metrics.isLoading ? <p className="mt-3 text-xs text-muted-foreground">{zh ? "正在读取观察数据…" : "Loading observation data…"}</p> : null}
+    {metrics.error ? <p className="mt-3 rounded-lg bg-warning/10 p-3 text-xs">{zh ? "暂时无法读取试用观察数据。" : "Pilot observation data is temporarily unavailable."}</p> : null}
+    {value ? <><div className="mt-3 grid gap-2 sm:grid-cols-4"><MetricValue label={zh ? "处置单" : "Cases"} value={String(value.cases.total)} /><MetricValue label={zh ? "已恢复" : "Recovered"} value={`${value.cases.recovered} · ${percent(value.cases.recoveryRate)}`} /><MetricValue label={zh ? "安全中止" : "Safe aborts"} value={String(value.remediation.safeAbort)} /><MetricValue label={zh ? "人工接管" : "Handoffs"} value={String(value.cases.manualHandoff)} /></div><p className="mt-3 text-xs text-muted-foreground">{zh ? `受控变更 ${value.cases.changed} 次 · 结果待确认 ${value.remediation.unknownOutcome} 次 · 平均闭环 ${value.timing.averageCaseSeconds == null ? "—" : `${value.timing.averageCaseSeconds} 秒`}` : `${value.cases.changed} changes · ${value.remediation.unknownOutcome} unknown outcomes · average closure ${value.timing.averageCaseSeconds == null ? "—" : `${value.timing.averageCaseSeconds}s`}`}</p></> : null}
+  </div>;
+}
+
+function MetricValue({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-md bg-muted p-2"><span className="block text-[11px] text-muted-foreground">{label}</span><strong className="mt-1 block text-sm">{value}</strong></div>;
 }
 
 function hostRecovery(host: SshHost, zh: boolean, professional: boolean) {
@@ -336,12 +355,15 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
   const [message, setMessage] = useState<string | null>(null);
   const [credentialRepairNeeded, setCredentialRepairNeeded] = useState(false);
   const handledRequestKey = useRef<string | null>(null);
+  const assistantInputRef = useRef<HTMLInputElement>(null);
   const operationsCases = useQuery({
     queryKey: ["host-operations-cases", host.id],
     queryFn: () => hostApi.operationCases(host.id),
-    enabled: !professional && host.connectionStatus === "ready",
+    enabled: !professional,
   });
   const activeCase = operationsCases.data?.activeCase ?? null;
+  const selectedCase = activeCase ?? operationsCases.data?.cases[0] ?? null;
+  const ready = host.connectionStatus === "ready";
   const choose = (next: NonNullable<typeof plan>) => { setPlan(next); setResult(null); setRun(null); setRemediation(null); setMessage(null); setCredentialRepairNeeded(false); };
   const mutation = useMutation({
     mutationFn: (next: NonNullable<typeof plan>) => next.parameters ? hostApi.diagnose(host.id, next.action, next.parameters) : hostApi.diagnose(host.id, next.action),
@@ -370,7 +392,9 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
     },
   });
   const runMutation = useMutation({
-    mutationFn: ({ question, incidentId }: { question: string; incidentId?: string | null }) => hostApi.diagnoseCase(host.id, question, incidentId),
+    mutationFn: ({ question, incidentId, caseId }: { question?: string; incidentId?: string | null; caseId?: string | null }) => caseId
+      ? hostApi.diagnoseCase(host.id, undefined, incidentId, caseId)
+      : hostApi.diagnoseCase(host.id, question, incidentId),
     onMutate: () => { setRun(null); setPlan(null); setResult(null); setRemediation(null); setMessage(null); setCredentialRepairNeeded(false); },
     onSuccess: (response) => { setRun(response.run ?? response.case.latestRun); setPlan(null); setResult(null); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-operations-cases", host.id] }); },
     onError: (error) => {
@@ -381,7 +405,7 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
       if (repairNeeded) void queryClient.invalidateQueries({ queryKey: ["my-hosts"] });
     },
   });
-  const effectiveRun = run ?? activeCase?.latestRun ?? null;
+  const effectiveRun = run ?? selectedCase?.latestRun ?? null;
   const remediationEligible = !professional && effectiveRun?.intent === "website";
   const remediationProfiles = useQuery({
     queryKey: ["my-host-tls-profiles", host.id],
@@ -392,6 +416,11 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
     queryKey: ["host-remediation-plans", host.id],
     queryFn: () => hostApi.remediationPlans(host.id),
     enabled: !professional && host.connectionStatus === "ready",
+  });
+  const linkedRemediation = useQuery({
+    queryKey: ["host-remediation-plan", host.id, selectedCase?.remediationPlanId],
+    queryFn: () => hostApi.remediationPlan(host.id, selectedCase!.remediationPlanId!),
+    enabled: !professional && ready && Boolean(selectedCase?.remediationPlanId),
   });
   const remediationPlanMutation = useMutation({
     mutationFn: (profileId: string) => hostApi.planRemediation(host.id, profileId, effectiveRun!.id),
@@ -408,9 +437,13 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
     onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); void queryClient.invalidateQueries({ queryKey: ["host-operations-cases", host.id] }); },
     onError: (error) => setMessage(remediationFailureText(error, zh)),
   });
+  const effectiveRemediation = remediation ?? linkedRemediation.data?.plan ?? null;
+  const remediationSectionRef = useRef<HTMLDivElement>(null);
+  const focusRemediation = () => remediationSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  const focusAssistantInput = () => assistantInputRef.current?.focus();
+  const hasRemediationSection = Boolean(remediationProfiles.data?.profiles.length);
   useEffect(() => { setInput(""); setPlan(null); setResult(null); setRun(null); setRemediation(null); setMessage(null); setCredentialRepairNeeded(false); }, [host.id]);
   useEffect(() => { if (host.connectionStatus !== "ready") { setPlan(null); setResult(null); setRun(null); setRemediation(null); } }, [host.connectionStatus]);
-  const ready = host.connectionStatus === "ready";
   useEffect(() => {
     const requestKey = request ? `${request.hostId}:${request.id}` : null;
     if (!request || request.hostId !== host.id || handledRequestKey.current === requestKey || !ready) return;
@@ -420,6 +453,17 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
     else runMutation.mutate({ question: request.question, incidentId: request.incidentId });
   }, [host.id, professional, ready, request]);
   const busy = planMutation.isPending || mutation.isPending || runMutation.isPending || remediationPlanMutation.isPending || remediationConfirmMutation.isPending || remediationRecheckMutation.isPending;
+  const caseAction = activeCase ? caseActionFor({
+    item: activeCase,
+    busy,
+    onResume: () => runMutation.mutate({ caseId: activeCase.id }),
+    onRepairCredential,
+    onFocusRemediation: focusRemediation,
+    onFocusInput: focusAssistantInput,
+    hasRemediationSection,
+    remediation: effectiveRemediation,
+    onRecheck: (plan) => remediationRecheckMutation.mutate(plan),
+  }) : null;
   const submit = () => {
     if (!input.trim() || busy) return;
     if (professional) planMutation.mutate(input.trim());
@@ -428,8 +472,9 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
   const planCopy = plan ? hostDiagnosticPlanCopy(plan, zh) : null;
   return <div className="rounded-lg border bg-card p-4" data-testid="host-assistant">
     <div className="flex flex-wrap items-start gap-3"><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Bot className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{zh ? "问问 AI" : "Ask AI"}</p>{professional ? <StatusBadge tone="neutral"><Sparkles className="size-3" />{zh ? "只读检查" : "Read-only checks"}</StatusBadge> : <StatusBadge tone="success"><Sparkles className="size-3" />{zh ? "设备助手" : "Device assistant"}</StatusBadge>}</div><p className="mt-1 text-xs text-muted-foreground">{professional ? (zh ? "说出你遇到的问题。助手会先展示固定检查计划，确认后执行。" : "Describe the problem. The assistant shows a fixed inspection plan before it runs.") : (zh ? "直接问这台设备的空间、内存、程序、网络或最近登录情况。" : "Ask about this device's storage, memory, apps, network, or recent sign-ins.")}</p></div></div>
-    {!professional && activeCase ? <HostOperationsCasePanel item={activeCase} zh={zh} /> : null}
-    <div className="mt-4 flex flex-col gap-2 sm:flex-row"><Input disabled={busy} value={input} placeholder={professional ? (zh ? "例如：看看磁盘还剩多少空间" : "For example: show remaining disk space") : (zh ? "例如：最近有谁登录过？" : "For example: who signed in recently?")} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submit(); }} /><Button variant="secondary" disabled={!input.trim() || !ready || busy} onClick={submit}>{busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{professional ? (zh ? "生成建议" : "Suggest") : (zh ? "查看" : "Ask")}</Button></div>
+    {!professional && activeCase ? <HostOperationsCasePanel item={activeCase} zh={zh} action={caseAction} /> : null}
+    {!professional && Boolean(operationsCases.data?.cases.length && operationsCases.data.cases.length > (activeCase ? 1 : 0)) ? <HostOperationsCaseHistory cases={operationsCases.data?.cases ?? []} activeCaseId={activeCase?.id ?? null} zh={zh} /> : null}
+    <div className="mt-4 flex flex-col gap-2 sm:flex-row"><Input ref={assistantInputRef} disabled={busy} value={input} placeholder={professional ? (zh ? "例如：看看磁盘还剩多少空间" : "For example: show remaining disk space") : (zh ? "例如：最近有谁登录过？" : "For example: who signed in recently?")} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submit(); }} /><Button variant="secondary" disabled={!input.trim() || !ready || busy} onClick={submit}>{busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{professional ? (zh ? "生成建议" : "Suggest") : (zh ? "查看" : "Ask")}</Button></div>
     <div className="mt-3 flex flex-wrap gap-2">{!professional ? <Button size="sm" variant="secondary" disabled={!ready || busy} onClick={() => runMutation.mutate({ question: zh ? "全面检查这台设备" : "Run an overall health check" })}><Sparkles />{zh ? "全面体检" : "Full check"}</Button> : null}{HOST_DIAGNOSTIC_QUICK_ACTIONS.map((item) => <Button key={item.action} size="sm" variant="ghost" disabled={!ready || busy} onClick={() => selectAction(hostDiagnosticPlan(item.action))}>{professional ? hostDiagnosticPlanCopy(item, zh).title : ordinaryDiagnosticLabel(item.action, zh)}</Button>)}</div>
     {!ready ? <p className="mt-3 rounded-lg bg-warning/10 p-3 text-xs text-muted-foreground">{zh ? "请先完成主机连接验证，助手才会访问设备。" : "Complete host connection verification before the assistant can access this device."}</p> : null}
     {professional && plan && planCopy && !result ? <div className="mt-4 space-y-3 rounded-lg border border-primary/25 bg-primary/[0.04] p-3"><div><p className="text-sm font-medium">{planCopy.title}</p><p className="mt-1 text-xs text-muted-foreground">{planCopy.explanation}</p></div><div className="rounded-md bg-muted p-3 text-sm"><span className="text-xs text-muted-foreground">{zh ? "将检查" : "Will check"}</span><p className="mt-1 font-medium">{planCopy.check}</p></div><code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{plan.command || (zh ? "需要先指定服务名称" : "Specify a service name first")}</code><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{zh ? "只读 · 不会上传、删除、清理或重启服务" : "Read-only · no upload, deletion, cleanup, or service restart"}</span><Button disabled={!ready || !plan.command || mutation.isPending} onClick={() => mutation.mutate(plan)}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "确认并执行" : "Confirm and run"}</Button></div></div> : null}
@@ -437,9 +482,9 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
     {message ? <div role="alert" className="mt-3 flex flex-wrap items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" /><p className="min-w-0 flex-1">{message}</p>{credentialRepairNeeded && ready ? <Button size="sm" variant="secondary" onClick={onRepairCredential}><KeyRound />{zh ? "重新输入登录信息" : "Update sign-in details"}</Button> : null}</div> : null}
     {result ? <div className="mt-4"><div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground"><CheckCircle2 className="size-4 text-primary" />{professional ? (zh ? "检查结果（仅本次会话保留技术输出）" : "Check result (technical output is session-only)") : (zh ? "AI 已查看这台设备" : "AI checked this device")}</div><DiagnosticSummaryPanel summary={result.summary} zh={zh} professional={professional} />{!professional && result.action === "ssh_login_audit" ? <LoginAuditPanel output={result.output} zh={zh} /> : null}{professional ? <details className="mt-3 rounded-lg border p-3" open><summary className="cursor-pointer text-xs font-medium">{zh ? "技术证据" : "Technical evidence"}</summary><div className="mt-3 space-y-2"><code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{result.command}</code>{result.resolvedAddress ? <p className="break-all text-xs text-muted-foreground">{zh ? "本次连接地址" : "Connection address"}: {result.resolvedAddress}</p> : null}<pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs leading-5">{result.output || (zh ? "设备没有返回原始输出。" : "The device returned no raw output.")}</pre><p className="text-xs text-muted-foreground">{zh ? "原始输出只在本次页面会话显示，不写入诊断审计。" : "Raw output is shown only in this page session and is not written to diagnostic audit records."}</p></div></details> : null}</div> : null}
     {effectiveRun ? <DiagnosticRunPanel run={effectiveRun} zh={zh} professional={professional} /> : null}
-    {remediationEligible && remediationProfiles.data?.profiles.length ? <HostRemediationPanel
+    {remediationEligible && remediationProfiles.data?.profiles.length ? <div ref={remediationSectionRef}><HostRemediationPanel
       profiles={remediationProfiles.data.profiles}
-      plan={remediation}
+      plan={effectiveRemediation}
       zh={zh}
       planning={remediationPlanMutation.isPending}
       confirming={remediationConfirmMutation.isPending}
@@ -447,47 +492,102 @@ function HostAssistant({ host, zh, professional, onRepairCredential, request }: 
       onPlan={(profileId) => remediationPlanMutation.mutate(profileId)}
       onConfirm={(next) => remediationConfirmMutation.mutate(next)}
       onRecheck={(next) => remediationRecheckMutation.mutate(next)}
-    /> : null}
+    /></div> : null}
     {remediationEligible && remediationProfiles.error ? <div role="alert" className="mt-4 rounded-lg border border-warning/30 bg-warning/10 p-3"><p className="text-sm font-medium">{zh ? "暂时无法确认是否有安全处理方案" : "Repair availability could not be confirmed"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "设备没有被修改。可以稍后重新检查，或到“我的站点”的专业设置确认托管服务。" : "The device was not changed. Check again later or verify the managed service in My Sites Professional settings."}</p></div> : null}
     {remediationEligible && !remediationProfiles.isLoading && !remediationProfiles.error && !remediationProfiles.data?.profiles.length ? <div className="mt-4 rounded-lg border border-warning/30 bg-warning/10 p-3" data-testid="host-remediation-unavailable"><p className="text-sm font-medium">{zh ? "这台设备还没有可安全处理的网站服务" : "No safely managed website service is configured"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "主机侧只读检查已经完成，但助手不会猜测要重载哪个服务。请先在“我的站点”的专业设置中绑定已验证主机、HTTPS 和托管服务。" : "The read-only host check is complete, but the assistant will not guess which service to reload. First bind a verified host, HTTPS, and managed service in My Sites Professional settings."}</p></div> : null}
     {!professional && remediationHistory.data?.plans.length ? <HostRemediationHistory plans={remediationHistory.data.plans} zh={zh} rechecking={remediationRecheckMutation.isPending} onRecheck={(next) => remediationRecheckMutation.mutate(next)} /> : null}
   </div>;
 }
 
-function HostOperationsCasePanel({ item, zh }: { item: HostOperationsCase; zh: boolean }) {
-  const statusCopy: Record<HostOperationsCase["status"], readonly [string, string]> = {
-    checking: ["正在检查这件事", "Checking this issue"],
-    diagnosed: ["这件事已有检查结果", "This issue has a check result"],
-    awaiting_confirmation: ["等待你确认处理", "Waiting for your confirmation"],
-    changing: ["正在按确认内容处理", "Applying the confirmed action"],
-    recovered: ["这件事已经恢复", "This issue is resolved"],
-    unresolved: ["这件事尚未恢复", "This issue is not resolved"],
-    needs_help: ["这件事需要继续处理", "This issue needs follow-up"],
-  };
-  const nextCopy: Record<HostOperationsCase["nextStep"], readonly [string, string]> = {
-    wait_for_diagnosis: ["等待本次只读检查完成。", "Wait for the current read-only check to finish."],
-    check_managed_website: ["下一步检查真实网站；确认异常后才会展示受控处理方案。", "Next, check the real website. A governed action is shown only after the problem is confirmed."],
-    review_supported_action: ["检查已经完成；只有现有安全方案可处理时，才会单独请你确认。", "The check is complete. You will be asked separately only when an existing safe action applies."],
-    describe_remaining_symptom: ["检查没有发现明显问题。如果问题仍在，请说明你现在看到的具体表现。", "No obvious issue was found. If the problem remains, describe exactly what you see now."],
-    review_incomplete_checks: ["部分检查没有完成，请先查看结果，再决定是否换一种检查。", "Some checks did not finish. Review the result before trying a different check."],
-    review_findings: ["先查看最重要的发现，再按下面唯一可用的安全步骤继续。", "Review the most important finding, then continue with the single safe step below."],
-    update_sign_in: ["重新准备这台设备的登录信息，然后继续检查。", "Prepare this device's sign-in details, then continue the check."],
-    confirm_device_identity: ["先确认仍是同一台设备；尚未修改设备。", "Confirm that this is still the same device. The device was not changed."],
-    restore_connection: ["设备恢复在线后继续；尚未修改设备。", "Continue after the device is back online. The device was not changed."],
-    try_another_check: ["本次检查没有完成，可以换一项固定检查继续。", "This check did not finish. Continue with another fixed check."],
-    recheck_device_identity: ["设备连接信息已经变化，请重新确认后开始新的检查。", "The device connection changed. Confirm it again before starting a new check."],
-    confirm_governed_action: ["已有目标唯一、可复查的处理方案；查看影响后由你确认一次。", "A uniquely targeted, verifiable action is ready. Review its impact and confirm it once."],
-    wait_for_verification: ["正在执行已确认的处理并复查结果，请不要重复操作。", "The confirmed action is running and being verified. Do not repeat it."],
-    case_complete: ["处理结果已经复查确认，这件事可以结束。", "The outcome was verified. This issue is complete."],
-    recheck_outcome: ["结果还不能确认，下一步只重新检查，不重复执行处理。", "The outcome is not confirmed. Recheck only; do not repeat the action."],
-    review_manual_handoff: ["现有安全能力无法继续，请查看可交接说明；不会尝试任意命令。", "The available safe actions cannot continue. Review the handoff guidance; no arbitrary command will be attempted."],
-  };
-  const tone = item.status === "recovered" ? "success" : ["unresolved", "needs_help"].includes(item.status) ? "warning" : "neutral";
+const CASE_STATUS_COPY: Record<HostOperationsCase["status"], readonly [string, string]> = {
+  checking: ["正在检查这件事", "Checking this issue"],
+  diagnosed: ["这件事已有检查结果", "This issue has a check result"],
+  awaiting_confirmation: ["等待你确认处理", "Waiting for your confirmation"],
+  changing: ["正在按确认内容处理", "Applying the confirmed action"],
+  recovered: ["这件事已经恢复", "This issue is resolved"],
+  unresolved: ["这件事尚未恢复", "This issue is not resolved"],
+  needs_help: ["这件事需要继续处理", "This issue needs follow-up"],
+};
+
+const CASE_PHASE_COPY: Record<HostOperationsCase["status"], readonly [string, string]> = {
+  checking: ["正在诊断", "Diagnosing"],
+  diagnosed: ["诊断完成", "Diagnosis complete"],
+  awaiting_confirmation: ["等待确认", "Awaiting confirmation"],
+  changing: ["执行并复查", "Applying and verifying"],
+  recovered: ["已恢复", "Recovered"],
+  unresolved: ["仍未恢复", "Still unresolved"],
+  needs_help: ["需要继续处理", "Needs follow-up"],
+};
+
+const CASE_NEXT_COPY: Record<HostOperationsCase["nextStep"], readonly [string, string]> = {
+  wait_for_diagnosis: ["等待本次只读检查完成。", "Wait for the current read-only check to finish."],
+  check_managed_website: ["下一步检查真实网站；确认异常后才会展示受控处理方案。", "Next, check the real website. A governed action is shown only after the problem is confirmed."],
+  review_supported_action: ["检查已经完成；只有现有安全方案可处理时，才会单独请你确认。", "The check is complete. You will be asked separately only when an existing safe action applies."],
+  describe_remaining_symptom: ["检查没有发现明显问题。如果问题仍在，请说明你现在看到的具体表现。", "No obvious issue was found. If the problem remains, describe exactly what you see now."],
+  review_incomplete_checks: ["部分检查没有完成，请先查看结果，再决定是否换一种检查。", "Some checks did not finish. Review the result before trying a different check."],
+  review_findings: ["先查看最重要的发现，再按下面唯一可用的安全步骤继续。", "Review the most important finding, then continue with the single safe step below."],
+  update_sign_in: ["重新准备这台设备的登录信息，然后继续检查。", "Prepare this device's sign-in details, then continue the check."],
+  confirm_device_identity: ["先确认仍是同一台设备；尚未修改设备。", "Confirm that this is still the same device. The device was not changed."],
+  restore_connection: ["设备恢复在线后继续；尚未修改设备。", "Continue after the device is back online. The device was not changed."],
+  try_another_check: ["本次检查没有完成，可以换一项固定检查继续。", "This check did not finish. Continue with another fixed check."],
+  recheck_device_identity: ["设备连接信息已经变化，请重新确认后开始新的检查。", "The device connection changed. Confirm it again before starting a new check."],
+  confirm_governed_action: ["已有目标唯一、可复查的处理方案；查看影响后由你确认一次。", "A uniquely targeted, verifiable action is ready. Review its impact and confirm it once."],
+  wait_for_verification: ["正在执行已确认的处理并复查结果，请不要重复操作。", "The confirmed action is running and being verified. Do not repeat it."],
+  case_complete: ["处理结果已经复查确认，这件事可以结束。", "The outcome was verified. This issue is complete."],
+  recheck_outcome: ["结果还不能确认，下一步只重新检查，不重复执行处理。", "The outcome is not confirmed. Recheck only; do not repeat the action."],
+  review_manual_handoff: ["现有安全能力无法继续，请查看可交接说明；不会尝试任意命令。", "The available safe actions cannot continue. Review the handoff guidance; no arbitrary command will be attempted."],
+};
+
+const CASE_TIMELINE_COPY: Record<HostOperationsCase["timeline"][number]["kind"], readonly [string, string]> = {
+  case_opened: ["已开始处理这件事", "Started this issue"],
+  diagnosis_completed: ["只读检查已完成", "Read-only checks completed"],
+  diagnosis_incomplete: ["检查没有完成", "Checks did not finish"],
+  device_changed: ["设备连接信息发生变化", "Device connection changed"],
+  remediation_planned: ["已准备受控处理方案", "Governed action prepared"],
+  remediation_started: ["已开始执行并复查", "Started applying and verifying"],
+  remediation_completed: ["处理结果已确认", "Action outcome confirmed"],
+  remediation_incomplete: ["处理结果还未确认", "Action outcome is not confirmed"],
+};
+
+function caseTone(status: HostOperationsCase["status"]) {
+  return status === "recovered" ? "success" : ["unresolved", "needs_help"].includes(status) ? "warning" : "neutral";
+}
+
+type HostOperationsCaseAction = { label: readonly [string, string]; onClick: () => void; disabled?: boolean };
+
+function caseActionFor({ item, busy, onResume, onRepairCredential, onFocusRemediation, onFocusInput, hasRemediationSection, remediation, onRecheck }: { item: HostOperationsCase; busy: boolean; onResume: () => void; onRepairCredential: () => void; onFocusRemediation: () => void; onFocusInput: () => void; hasRemediationSection: boolean; remediation: HostRemediationPlan | null; onRecheck: (plan: HostRemediationPlan) => void }): HostOperationsCaseAction | null {
+  if (item.status === "checking" && !item.latestRun) return { label: ["继续检查", "Continue check"], onClick: onResume, disabled: busy };
+  if (item.nextStep === "update_sign_in") return { label: ["重新输入登录信息", "Update sign-in details"], onClick: onRepairCredential };
+  if (item.nextStep === "restore_connection") return { label: ["重新连接设备", "Reconnect device"], onClick: onRepairCredential };
+  if (["check_managed_website", "confirm_governed_action"].includes(item.nextStep) && hasRemediationSection) {
+    return { label: item.nextStep === "confirm_governed_action" ? ["查看并确认处理", "Review and confirm"] : ["继续检查网站", "Continue to website check"], onClick: onFocusRemediation };
+  }
+  if (item.nextStep === "recheck_outcome") {
+    if (remediation && ["completed_unresolved", "outcome_unknown"].includes(remediation.status)) return { label: ["重新检查网站", "Check website again"], onClick: () => onRecheck(remediation), disabled: busy };
+    if (hasRemediationSection) return { label: ["查看网站复查", "Review website recheck"], onClick: onFocusRemediation };
+  }
+  if (["describe_remaining_symptom", "try_another_check"].includes(item.nextStep)) return { label: ["补充说明", "Add details"], onClick: onFocusInput };
+  return null;
+}
+
+function HostOperationsCasePanel({ item, zh, action }: { item: HostOperationsCase; zh: boolean; action: HostOperationsCaseAction | null }) {
   return <div className="mt-4 rounded-lg border border-primary/20 bg-primary/[0.04] p-3" data-testid="host-operations-case">
-    <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs text-muted-foreground">{zh ? "正在处理的一件事" : "Current issue"}</p><p className="mt-1 text-sm font-medium">{statusCopy[item.status][zh ? 0 : 1]}</p></div><StatusBadge tone={tone}>{item.deviceChanged ? (zh ? "设备已修改" : "Device changed") : (zh ? "尚未修改设备" : "Device unchanged")}</StatusBadge></div>
-    <p className="mt-2 text-xs text-muted-foreground">{nextCopy[item.nextStep][zh ? 0 : 1]}</p>
+    <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs text-muted-foreground">{zh ? "正在处理的一件事" : "Current issue"}</p><p className="mt-1 text-sm font-medium">{CASE_STATUS_COPY[item.status][zh ? 0 : 1]}</p></div><StatusBadge tone={caseTone(item.status)}>{item.deviceChanged ? (zh ? "设备已修改" : "Device changed") : (zh ? "尚未修改设备" : "Device unchanged")}</StatusBadge></div>
+    <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2"><div className="rounded-md bg-muted p-3"><span className="text-muted-foreground">{zh ? "当前阶段" : "Current phase"}</span><strong className="mt-1 block text-sm">{CASE_PHASE_COPY[item.status][zh ? 0 : 1]}</strong></div><div className="rounded-md bg-primary/[0.06] p-3"><span className="text-muted-foreground">{zh ? "唯一下一步" : "Single next step"}</span><strong className="mt-1 block text-sm">{CASE_NEXT_COPY[item.nextStep][zh ? 0 : 1]}</strong></div></div>
+    {action ? <Button size="sm" variant="secondary" className="mt-3" disabled={action.disabled} onClick={action.onClick}><ChevronRight />{action.label[zh ? 0 : 1]}</Button> : null}
+    <HostOperationsCaseTimeline item={item} zh={zh} />
     <p className="mt-2 text-xs text-muted-foreground">{zh ? `最近更新：${new Date(item.updatedAt).toLocaleString("zh-CN")}` : `Last updated: ${new Date(item.updatedAt).toLocaleString("en-US")}`}</p>
   </div>;
+}
+
+function HostOperationsCaseTimeline({ item, zh }: { item: HostOperationsCase; zh: boolean }) {
+  return <details className="mt-3 rounded-lg border bg-background/60 p-3" open={item.status === "checking" || item.status === "changing"} data-testid="host-operations-timeline"><summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium"><History className="size-4 text-muted-foreground" />{zh ? `完整时间线 · ${item.timeline.length} 个节点` : `Full timeline · ${item.timeline.length} events`}</summary><ol className="mt-3 space-y-3 border-l pl-4">{item.timeline.map((entry, index) => <li key={`${entry.kind}-${entry.at}-${index}`} className="relative text-xs"><span className="absolute -left-[21px] top-0.5 size-2.5 rounded-full border-2 border-background bg-primary" /><div className="flex flex-wrap items-baseline justify-between gap-2"><strong>{CASE_TIMELINE_COPY[entry.kind][zh ? 0 : 1]}</strong><time className="text-muted-foreground">{new Date(entry.at).toLocaleString(zh ? "zh-CN" : "en-US")}</time></div>{entry.deviceChanged ? <p className="mt-1 text-warning">{zh ? "这一步确认设备已发生修改。" : "This step confirms that the device changed."}</p> : null}</li>)}</ol></details>;
+}
+
+function HostOperationsCaseHistory({ cases, activeCaseId, zh }: { cases: HostOperationsCase[]; activeCaseId: string | null; zh: boolean }) {
+  const history = cases.filter((item) => item.id !== activeCaseId);
+  if (!history.length) return null;
+  return <details className="mt-4 rounded-lg border p-3" data-testid="host-operations-history"><summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-medium"><span className="flex items-center gap-2"><History className="size-4 text-muted-foreground" />{zh ? "历史处置单" : "Case history"}</span><span className="text-muted-foreground">{history.length}</span></summary><div className="mt-3 space-y-2">{history.map((item) => <details key={item.id} className="rounded-lg border bg-muted/20 p-3"><summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 text-xs"><span><strong className="block">{CASE_STATUS_COPY[item.status][zh ? 0 : 1]}</strong><time className="mt-1 block text-muted-foreground">{new Date(item.updatedAt).toLocaleString(zh ? "zh-CN" : "en-US")}</time></span><StatusBadge tone={caseTone(item.status)}>{CASE_PHASE_COPY[item.status][zh ? 0 : 1]}</StatusBadge></summary><div className="mt-3 space-y-2 border-t pt-3"><div className="rounded-md bg-primary/[0.06] p-3 text-xs"><span className="text-muted-foreground">{zh ? "唯一下一步" : "Single next step"}</span><p className="mt-1 font-medium">{CASE_NEXT_COPY[item.nextStep][zh ? 0 : 1]}</p></div>{item.latestRun?.summary ? <p className="text-xs text-muted-foreground">{hostDiagnosticSummaryCopy(item.latestRun.summary, zh, true).finding}</p> : null}<HostOperationsCaseTimeline item={item} zh={zh} /></div></details>)}</div></details>;
 }
 
 function HostRemediationPanel({ profiles, plan, zh, planning, confirming, rechecking, onPlan, onConfirm, onRecheck }: { profiles: HostTlsActivationProfile[]; plan: HostRemediationPlan | null; zh: boolean; planning: boolean; confirming: boolean; rechecking: boolean; onPlan: (profileId: string) => void; onConfirm: (plan: HostRemediationPlan) => void; onRecheck: (plan: HostRemediationPlan) => void }) {

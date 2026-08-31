@@ -15,15 +15,15 @@ export function createHostOperationsCaseService({
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
+  const inFlightCaseIds = new Set();
   state.hostOperationsCases ??= [];
 
-  function listCases(target, actor) {
+  function listCases(target, actor, { limit = 20 } = {}) {
     const ownership = ownerKey(target, actor);
-    return state.hostOperationsCases
+    const cases = state.hostOperationsCases
       .filter((item) => owned(item, ownership))
-      .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)))
-      .slice(0, 20)
-      .map(publicCase);
+      .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    return (limit == null ? cases : cases.slice(0, limit)).map(publicCase);
   }
 
   function findCase(target, caseId, actor) {
@@ -50,14 +50,21 @@ export function createHostOperationsCaseService({
   }
 
   async function continueCase(target, body, actor) {
-    const diagnosticPlan = hostDiagnosticRunPlanForInput(body?.input);
-    if (!diagnosticPlan) return { ok: false, status: 422, error: "ssh_diagnostic_intent_unsupported" };
     const ownership = ownerKey(target, actor);
+    if (body?.caseId && body?.input) return { ok: false, status: 400, error: "host_operations_case_input_conflict" };
+    const requestedCase = body?.caseId ? state.hostOperationsCases.find((candidate) => candidate.id === String(body.caseId) && owned(candidate, ownership)) : null;
+    if (body?.caseId && !requestedCase) return { ok: false, status: 404, error: "host_operations_case_not_found" };
+    const diagnosticPlan = body?.input
+      ? hostDiagnosticRunPlanForInput(body.input)
+      : requestedCase?.diagnosticPlan
+        ? hostDiagnosticRunPlanForStoredCase(requestedCase)
+        : resumablePlanForCase(requestedCase);
+    if (!diagnosticPlan) return { ok: false, status: 422, error: "host_operations_case_resume_unavailable" };
     const incident = resolveIncident(body?.incidentId, ownership);
     if (body?.incidentId && !incident) return { ok: false, status: 404, error: "host_health_incident_not_found" };
     const intentKey = stableIntentKey(diagnosticPlan);
     const targetRevision = Number(target.revision ?? 1);
-    let item = findReusableCase(ownership, incident?.id ?? null, intentKey);
+    let item = requestedCase ?? findReusableCase(ownership, incident?.id ?? null, intentKey);
 
     if (item && item.targetRevision !== targetRevision) {
       runTx(() => {
@@ -69,7 +76,7 @@ export function createHostOperationsCaseService({
       item = null;
     }
 
-    if (item?.diagnosticRunId || item?.status === "checking") {
+    if (item?.diagnosticRunId || (item?.status === "checking" && inFlightCaseIds.has(item.id))) {
       return { ok: true, case: publicCase(item), run: latestRun(item), reused: true };
     }
 
@@ -83,6 +90,7 @@ export function createHostOperationsCaseService({
         intent: diagnosticPlan.intent,
         intentKey,
         understanding: diagnosticPlan.understanding,
+        diagnosticPlan: durableDiagnosticPlan(diagnosticPlan),
         status: "checking",
         nextStep: "wait_for_diagnosis",
         diagnosticRunId: null,
@@ -107,41 +115,46 @@ export function createHostOperationsCaseService({
       });
     }
 
-    const diagnosis = await runSshHostDiagnosticRun(target, body.input, actor);
-    if (!diagnosis.ok) {
-      runTx(() => {
-        item.status = "needs_help";
-        item.nextStep = nextStepForFailure(diagnosis.error);
-        item.lastError = diagnosis.error;
-        item.updatedAt = now();
-        pushTimeline(item, { kind: "diagnosis_incomplete", at: item.updatedAt, deviceChanged: false, error: diagnosis.error });
-      });
-      return { ...diagnosis, case: publicCase(item) };
-    }
+    inFlightCaseIds.add(item.id);
+    try {
+      const diagnosis = await runSshHostDiagnosticRun(target, body.input, actor, { plan: diagnosticPlan });
+      if (!diagnosis.ok) {
+        runTx(() => {
+          item.status = "needs_help";
+          item.nextStep = nextStepForFailure(diagnosis.error);
+          item.lastError = diagnosis.error;
+          item.updatedAt = now();
+          pushTimeline(item, { kind: "diagnosis_incomplete", at: item.updatedAt, deviceChanged: false, error: diagnosis.error });
+        });
+        return { ...diagnosis, case: publicCase(item) };
+      }
 
-    runTx(() => {
-      item.status = "diagnosed";
-      item.nextStep = nextStepForDiagnosis(diagnosis.run);
-      item.diagnosticRunId = diagnosis.run.id;
-      item.targetRevision = diagnosis.run.targetRevision;
-      item.lastError = null;
-      item.updatedAt = now();
-      pushTimeline(item, {
-        kind: "diagnosis_completed",
-        at: item.updatedAt,
-        deviceChanged: false,
-        diagnosticRunId: diagnosis.run.id,
-        severity: diagnosis.run.summary.severity,
+      runTx(() => {
+        item.status = "diagnosed";
+        item.nextStep = nextStepForDiagnosis(diagnosis.run);
+        item.diagnosticRunId = diagnosis.run.id;
+        item.targetRevision = diagnosis.run.targetRevision;
+        item.lastError = null;
+        item.updatedAt = now();
+        pushTimeline(item, {
+          kind: "diagnosis_completed",
+          at: item.updatedAt,
+          deviceChanged: false,
+          diagnosticRunId: diagnosis.run.id,
+          severity: diagnosis.run.summary.severity,
+        });
+        appendEvent({
+          invocationId: null,
+          type: "ssh.host_operations_case.diagnosed",
+          level: ["critical", "warning"].includes(diagnosis.run.summary.severity) ? "warning" : "info",
+          message: "A host operations case completed its read-only diagnosis.",
+          data: { targetId: target.id, caseId: item.id, diagnosticRunId: diagnosis.run.id, nextStep: item.nextStep, deviceChanged: false },
+        });
       });
-      appendEvent({
-        invocationId: null,
-        type: "ssh.host_operations_case.diagnosed",
-        level: ["critical", "warning"].includes(diagnosis.run.summary.severity) ? "warning" : "info",
-        message: "A host operations case completed its read-only diagnosis.",
-        data: { targetId: target.id, caseId: item.id, diagnosticRunId: diagnosis.run.id, nextStep: item.nextStep, deviceChanged: false },
-      });
-    });
-    return { ok: true, case: publicCase(item), run: diagnosis.run, reused: false };
+      return { ok: true, case: publicCase(item), run: diagnosis.run, reused: false };
+    } finally {
+      inFlightCaseIds.delete(item.id);
+    }
   }
 
   function resolveIncident(incidentId, ownership) {
@@ -224,6 +237,37 @@ function stableIntentKey(plan) {
     understanding.requestedChange,
     understanding.handling,
   ].join(":");
+}
+
+function durableDiagnosticPlan(plan) {
+  return {
+    version: 1,
+    intent: plan.intent,
+    understanding: plan.understanding,
+    steps: (plan.steps ?? []).map((step) => ({ action: step.action, parameters: step.parameters ?? {} })),
+  };
+}
+
+function resumablePlanForCase(item) {
+  if (!item) return null;
+  const canonicalInput = {
+    health: "全面检查这台设备",
+    performance: "机器很慢",
+    website: "网站打不开",
+    security: "检查登录安全",
+    containers: "检查容器状态",
+    targeted: "全面检查这台设备",
+  }[item.intent] ?? "全面检查这台设备";
+  return hostDiagnosticRunPlanForInput(canonicalInput);
+}
+
+function hostDiagnosticRunPlanForStoredCase(item) {
+  return {
+    version: 1,
+    intent: item.diagnosticPlan.intent,
+    understanding: item.diagnosticPlan.understanding,
+    steps: item.diagnosticPlan.steps.map((step) => ({ action: step.action, parameters: step.parameters ?? {} })),
+  };
 }
 
 function nextStepForDiagnosis(run) {

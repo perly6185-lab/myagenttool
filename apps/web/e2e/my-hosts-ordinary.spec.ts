@@ -37,6 +37,8 @@ type HostFixture = Omit<typeof host, "connectionStatus" | "lastConnectionError">
   lastConnectionError: null | { code: string; at: string };
 };
 
+type CaseFlow = "complete" | "safe_abort";
+
 async function mockOrdinaryHostApi(page: Page, fixture: {
   host?: HostFixture;
   scope?: typeof scope | null;
@@ -44,11 +46,16 @@ async function mockOrdinaryHostApi(page: Page, fixture: {
   health?: Record<string, unknown>;
   diagnosticRun?: Record<string, unknown>;
   operationCase?: Record<string, unknown> | null;
+  caseFlow?: CaseFlow;
 } = {}) {
   const currentHost = fixture.host ?? host;
   const currentScope = fixture.scope === undefined ? scope : fixture.scope;
+  let currentCase = fixture.operationCase ?? null;
+  let currentPlan: Record<string, unknown> | null = null;
   await page.route("http://127.0.0.1:5001/api/**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
+    const request = route.request();
+    const method = request.method();
+    const path = new URL(request.url()).pathname;
     if (path === "/api/session") return route.fulfill({ json: { user: { id: "usr_owner", name: "Owner", teamId: "team_local", role: "owner" } } });
     if (path === "/api/state") return route.fulfill({ json: {
       projects: [], worktrees: [], projectTargets: [], pendingDecisions: [], evidenceLedger: [], invocations: [], events: [],
@@ -58,8 +65,65 @@ async function mockOrdinaryHostApi(page: Page, fixture: {
       policy: { enabled: false, cadence: "daily", nextRunAt: null, lastRunAt: null, lastRunStatus: null, revision: 0 },
       latestSnapshot: null, snapshots: [], incidents: [], openIncidentCount: 0,
     } });
-    if (path === `/api/hosts/${currentHost.id}/assistant/cases`) return route.fulfill({ json: { cases: fixture.operationCase ? [fixture.operationCase] : [], count: fixture.operationCase ? 1 : 0, activeCase: fixture.operationCase ?? null } });
-    if (path === `/api/hosts/${currentHost.id}/assistant/remediation-plans`) return route.fulfill({ json: { plans: [], count: 0 } });
+    if (path === `/api/hosts/${currentHost.id}/assistant/cases` && method === "GET") {
+      const cases = currentCase ? [currentCase] : [];
+      const activeCase = currentCase && !["recovered", "unresolved", "needs_help"].includes(String(currentCase.status)) ? currentCase : null;
+      return route.fulfill({ json: { cases, count: cases.length, activeCase } });
+    }
+    if (path === `/api/hosts/${currentHost.id}/assistant/cases` && method === "POST" && fixture.diagnosticRun && !fixture.caseFlow) {
+      const body = (request.postDataJSON() ?? {}) as { incidentId?: string | null };
+      const at = "2026-08-31T00:00:00.000Z";
+      currentCase = {
+        id: "hoc_browser_diagnostic",
+        sshTargetId: currentHost.id,
+        incidentId: body.incidentId ?? null,
+        version: 1,
+        intent: fixture.diagnosticRun.intent,
+        understanding: fixture.diagnosticRun.understanding,
+        status: "diagnosed",
+        nextStep: "review_findings",
+        diagnosticRunId: fixture.diagnosticRun.id,
+        remediationPlanId: null,
+        targetRevision: currentHost.revision,
+        deviceChanged: false,
+        lastError: null,
+        timeline: [
+          { kind: "case_opened", at, deviceChanged: false },
+          { kind: "diagnosis_completed", at, deviceChanged: false, diagnosticRunId: fixture.diagnosticRun.id },
+        ],
+        latestRun: fixture.diagnosticRun,
+        createdAt: at,
+        updatedAt: at,
+      };
+      return route.fulfill({ json: { case: currentCase, run: fixture.diagnosticRun, reused: false } });
+    }
+    if (path === `/api/hosts/${currentHost.id}/assistant/cases` && method === "POST" && fixture.caseFlow) {
+      const body = (request.postDataJSON() ?? {}) as { caseId?: string | null };
+      if (!body.caseId) {
+        const at = "2026-08-31T08:00:00.000Z";
+        const run = {
+          id: "hdr_browser_website", targetRevision: currentHost.revision, createdAt: at, version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
+          understanding: { version: 1, goal: "restore", domain: "website", symptom: "unavailable", desiredOutcome: "restore_availability", requestedChange: "none", handling: "diagnose_before_change", confidence: "high" },
+          summary: { version: 1, severity: "critical", finding: "host_critical_findings", impact: "website_may_be_unavailable", nextAction: "check_managed_website", facts: [] },
+          steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "critical", finding: "service_not_running", impact: "website_may_be_unavailable", nextAction: "inspect_service_setup", facts: [] } }],
+        };
+        currentCase = {
+          id: "hoc_browser_website", sshTargetId: currentHost.id, incidentId: null, version: 1, intent: "website", understanding: run.understanding,
+          status: "diagnosed", nextStep: "check_managed_website", diagnosticRunId: run.id, remediationPlanId: null, targetRevision: currentHost.revision,
+          deviceChanged: false, lastError: null, timeline: [{ kind: "case_opened", at, deviceChanged: false }, { kind: "diagnosis_completed", at, deviceChanged: false, diagnosticRunId: run.id, severity: "critical" }],
+          latestRun: run, createdAt: at, updatedAt: at,
+        };
+        return route.fulfill({ json: { case: currentCase, run, reused: false } });
+      }
+      return route.fulfill({ json: { case: currentCase, run: currentCase?.latestRun ?? null, reused: true } });
+    }
+    if (path === `/api/hosts/${currentHost.id}/assistant/remediation-plans` && method === "GET") {
+      return route.fulfill({ json: { plans: currentPlan ? [currentPlan] : [], count: currentPlan ? 1 : 0 } });
+    }
+    if (path.startsWith(`/api/hosts/${currentHost.id}/assistant/remediation-plans/`) && method === "GET") {
+      return route.fulfill({ json: { plan: currentPlan } });
+    }
+    if (path === `/api/hosts/${currentHost.id}/tls-activation-profiles`) return route.fulfill({ json: { profiles: fixture.caseFlow ? [{ id: "htp_browser", sshTargetId: currentHost.id, certificateScopeId: "hfs_tls", label: "网站服务", type: "docker_nginx", containerName: "site-nginx", status: "ready", lastVerifiedAt: "2026-08-31T07:00:00.000Z", revision: 2 }] : [], count: fixture.caseFlow ? 1 : 0 } });
     if (path === `/api/hosts/${currentHost.id}/assistant/diagnose` && fixture.diagnosticRun) return route.fulfill({ json: { run: fixture.diagnosticRun } });
     if (path === `/api/hosts/${currentHost.id}/file-scopes`) return route.fulfill({ json: { scopes: currentScope ? [currentScope] : [], count: currentScope ? 1 : 0 } });
     if (currentScope && path === `/api/host-file-scopes/${currentScope.id}/entries`) return route.fulfill({ json: { scope: currentScope, path: "", count: 2, entries: [
@@ -80,6 +144,29 @@ async function mockOrdinaryHostApi(page: Page, fixture: {
     });
     if (path === `/api/hosts/${currentHost.id}/file-transfers`) return route.fulfill({ json: { transfers: fixture.transfers ?? [], count: fixture.transfers?.length ?? 0 } });
     if (path === `/api/hosts/${currentHost.id}/assistant/plan`) return route.fulfill({ json: { plan: { action: "disk_usage", command: "df -h", risk: "read_only" } } });
+    if (path === `/api/hosts/${currentHost.id}/assistant/remediation-plan` && method === "POST" && fixture.caseFlow) {
+      const at = "2026-08-31T08:01:00.000Z";
+      currentPlan = {
+        id: "hrp_browser_website", sshTargetId: currentHost.id, diagnosticRunId: "hdr_browser_website", diagnosticFinding: "host_critical_findings", profileId: "htp_browser",
+        siteId: "site_browser", publicationId: "spb_browser", action: "reload_managed_website", finding: "website_unreachable", risk: "low", status: "planned", phase: "awaiting_confirmation",
+        checks: ["website_health", "container_running", "configuration_valid", "reload_service", "website_health"], impact: "brief_connections_may_retry", filesChanged: false,
+        initialHealth: { status: "unhealthy", reason: "website_unreachable", statusCodeClass: null, contentMatched: false, checkedAt: at }, revision: 1, expiresAt: "2026-08-31T08:11:00.000Z", createdAt: at, result: null,
+      };
+      currentCase = { ...currentCase, status: "awaiting_confirmation", nextStep: "confirm_governed_action", remediationPlanId: currentPlan.id, updatedAt: at, timeline: [...(currentCase?.timeline ?? []), { kind: "remediation_planned", at, deviceChanged: false, remediationPlanId: currentPlan.id }] };
+      return route.fulfill({ json: { plan: currentPlan, reused: false } });
+    }
+    if (path.endsWith("/confirm") && method === "POST" && fixture.caseFlow && currentPlan) {
+      const at = "2026-08-31T08:02:00.000Z";
+      const safeAbort = fixture.caseFlow === "safe_abort";
+      currentPlan = {
+        ...currentPlan, status: safeAbort ? "failed" : "completed", phase: "finished", revision: 2, completedAt: at,
+        result: safeAbort
+          ? { outcome: "not_changed", changeAttempted: false, verification: "failed", completedChecks: ["preflight_website_health", "preflight_configuration_valid"], error: "website_preflight_failed" }
+          : { outcome: "restored", changeAttempted: true, verification: "passed", completedChecks: ["preflight_container_running", "service_reloaded", "verification_website_health"], websiteHealth: { status: "healthy", reason: "website_healthy", statusCodeClass: 2, contentMatched: true, checkedAt: at } },
+      };
+      currentCase = { ...currentCase, status: safeAbort ? "needs_help" : "recovered", nextStep: safeAbort ? "review_manual_handoff" : "case_complete", deviceChanged: !safeAbort, updatedAt: at, timeline: [...(currentCase?.timeline ?? []), { kind: safeAbort ? "remediation_incomplete" : "remediation_completed", at, deviceChanged: !safeAbort, remediationPlanId: currentPlan.id }] };
+      return route.fulfill({ json: { plan: currentPlan, reused: false } });
+    }
     if (path === `/api/hosts/${currentHost.id}/diagnostics`) {
       const action = (route.request().postDataJSON() as { action?: string } | null)?.action;
       if (action === "ssh_login_audit") return route.fulfill({ json: { result: {
@@ -335,6 +422,53 @@ test("ordinary owners resume one host issue after reopening the app", async ({ p
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.getByTestId("host-operations-case").scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath("my-hosts-resumed-case-390.png") });
+});
+
+test("ordinary owners follow a website issue from case creation through refresh to verified recovery", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({ state: { locale: "zh-CN", section: "myHosts", experienceMode: "ordinary" }, version: 1 }));
+  });
+  await mockOrdinaryHostApi(page, { caseFlow: "complete" });
+  await page.goto("/?section=myHosts");
+
+  await page.getByPlaceholder("例如：最近有谁登录过？").fill("网站打不开");
+  await page.getByRole("button", { name: "查看" }).click();
+  await expect(page.getByText("这件事已有检查结果")).toBeVisible();
+  await expect(page.getByText("唯一下一步")).toBeVisible();
+  await expect(page.getByRole("button", { name: "继续检查网站" })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText("这件事已有检查结果")).toBeVisible();
+  await expect(page.getByText("完整时间线 · 2 个节点")).toBeVisible();
+  await page.getByRole("button", { name: "继续检查网站" }).click();
+  await expect(page.getByTestId("host-remediation-offer")).toBeVisible();
+
+  await page.getByTestId("host-remediation-offer").getByRole("button", { name: "检查网站", exact: true }).click();
+  await expect(page.getByTestId("host-remediation-plan")).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认并处理" })).toBeVisible();
+  await page.getByRole("button", { name: "确认并处理" }).click();
+  await expect(page.getByText("网站已经恢复访问")).toBeVisible();
+
+  await page.getByTestId("host-operations-history").locator("summary").first().click();
+  await expect(page.getByText("这件事已经恢复")).toBeVisible();
+});
+
+test("ordinary owners stop a governed website action safely when preflight fails", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({ state: { locale: "zh-CN", section: "myHosts", experienceMode: "ordinary" }, version: 1 }));
+  });
+  await mockOrdinaryHostApi(page, { caseFlow: "safe_abort" });
+  await page.goto("/?section=myHosts");
+
+  await page.getByPlaceholder("例如：最近有谁登录过？").fill("网站打不开");
+  await page.getByRole("button", { name: "查看" }).click();
+  await page.getByTestId("host-remediation-offer").getByRole("button", { name: "检查网站", exact: true }).click();
+  await page.getByRole("button", { name: "确认并处理" }).click();
+
+  await expect(page.getByTestId("host-remediation-result")).toContainText("检查未通过，设备没有被修改");
+  await expect(page.getByText("系统在变更前安全停止")).toBeVisible();
+  await expect(page.getByText("设备已修改")).toHaveCount(0);
 });
 
 test("ordinary owners see recent sign-ins as readable activity at 320 px", async ({ page }, testInfo) => {

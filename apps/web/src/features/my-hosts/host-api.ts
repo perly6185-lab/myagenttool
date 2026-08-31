@@ -1,5 +1,5 @@
 import { ApiError, apiBase, csrfHeaders, ensureSession, request } from "@/lib/api/request";
-import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostDiagnosticRun, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResponse, HostFileTransfer, HostHealthOverview, HostHealthPolicy, HostHealthSnapshot, HostOperationsCase, HostPurpose, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostDiagnosticRun, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResponse, HostFileTransfer, HostHealthOverview, HostHealthPolicy, HostHealthSnapshot, HostOperationsCase, HostOperationsMetrics, HostPurpose, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
 
 export const MAX_HOST_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -25,8 +25,10 @@ export const hostApi = {
     request<{ run: HostDiagnosticRun }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/diagnose`, { input, confirmed: true }, true, 180_000),
   operationCases: (hostId: string) =>
     request<{ cases: HostOperationsCase[]; count: number; activeCase: HostOperationsCase | null }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/assistant/cases`),
-  diagnoseCase: (hostId: string, input: string, incidentId?: string | null) =>
-    request<{ case: HostOperationsCase; run: HostDiagnosticRun | null; reused: boolean }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/cases`, { input, incidentId: incidentId ?? null }, true, 180_000),
+  operationMetrics: (hostId: string) =>
+    request<{ metrics: HostOperationsMetrics }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/assistant/metrics`),
+  diagnoseCase: (hostId: string, input?: string, incidentId?: string | null, caseId?: string | null) =>
+    request<{ case: HostOperationsCase; run: HostDiagnosticRun | null; reused: boolean }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/cases`, { ...(input?.trim() ? { input: input.trim() } : {}), incidentId: incidentId ?? null, caseId: caseId ?? null }, true, 180_000),
   planRemediation: (hostId: string, profileId: string, diagnosticRunId: string) =>
     request<{ plan: HostRemediationPlan; reused: boolean }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plan`, { profileId, diagnosticRunId }, true, 30_000),
   confirmRemediation: (hostId: string, planId: string, expectedRevision: number) =>

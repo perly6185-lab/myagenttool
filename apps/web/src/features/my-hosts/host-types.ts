@@ -204,6 +204,35 @@ export interface HostOperationsCase {
   updatedAt: string;
 }
 
+export interface HostOperationsMetrics {
+  version: 1;
+  generatedAt: string;
+  cases: {
+    total: number;
+    active: number;
+    terminal: number;
+    recovered: number;
+    unresolved: number;
+    changed: number;
+    manualHandoff: number;
+    recoveryRate: number | null;
+    changeRate: number | null;
+  };
+  remediation: {
+    total: number;
+    terminal: number;
+    safeAbort: number;
+    unknownOutcome: number;
+    completed: number;
+    noChangeNeeded: number;
+  };
+  timing: {
+    completedCaseCount: number;
+    averageCaseSeconds: number | null;
+    latestCaseUpdatedAt: string | null;
+  };
+}
+
 export type HostRemediationPlanStatus = "planned" | "running" | "not_needed" | "completed" | "completed_unresolved" | "failed" | "outcome_unknown" | "expired";
 
 export interface HostWebsiteHealthSummary {

@@ -253,6 +253,9 @@ export function createServerRuntimeServices({
   // Integration-only seam for deterministic managed-website health outcomes.
   // Production always uses the pinned HTTPS checker composed below.
   hostWebsiteHealthChecker = null,
+  // Integration-only seam for deterministic SSH host acceptance. Production
+  // always uses the strict network connector composed below.
+  sshHostConnector: injectedSshHostConnector = null,
 }) {
   let idCounter = 1;
   const privateTutorReleaseBuildId = resolvePrivateTutorReleaseBuildId({ protocolVersion, stateSchemaVersion });
@@ -263,7 +266,7 @@ export function createServerRuntimeServices({
     updateClaudeSessionFromEvent: () => null,
   };
 
-  const sshHostConnector = createSshHostConnector();
+  const sshHostConnector = injectedSshHostConnector ?? createSshHostConnector();
   const {
     persistStateSoon,
     persistStateNow,
