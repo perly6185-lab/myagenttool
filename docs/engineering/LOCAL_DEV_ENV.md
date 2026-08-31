@@ -212,14 +212,20 @@ The server's durable state lives in SQLite by default (`<MYAGENTTOOL_STATE_PATH 
   rm -f .myagenttool/state/local-demo-state.sqlite*
   ```
   (and the `.json` if you also want to drop the export). The next boot seeds fresh.
-- **Export / backup:** a clean shutdown writes `…local-demo-state.json` automatically
-  as a rollback artifact. To run purely on JSON (e.g. to inspect or import), start with
-  `MYAGENTTOOL_STORE=memory`.
-- **Roll back to a JSON export:** delete the `.sqlite` and boot on the default backing
-  (it migrates the JSON into a fresh SQLite), or run with `MYAGENTTOOL_STORE=memory`.
+- **Export / import:** a clean shutdown writes `…local-demo-state.json` automatically
+  for inspection or one-time import. It is never served as the live backing.
+- **Restore a JSON export:** stop the server, move the current `.sqlite`, `-wal`, and
+  `-shm` files to a recovery directory, then boot normally. A new SQLite database
+  imports the JSON once. Keep the moved database until the import is verified.
 - **Check JSON↔SQLite parity:** against a stopped instance (or a copied state dir):
   ```
   pnpm store:parity .myagenttool/state/local-demo-state.json
   ```
-- **Opt out of SQLite entirely:** `MYAGENTTOOL_STORE=memory` (JSON is the backing;
-  also the automatic fallback on Node < 22.13 without flag-free `node:sqlite`).
+- **Startup failure:** SQLite unavailability aborts startup. An integrity failure
+  first copies the database and any WAL/SHM sidecars into a timestamped
+  `…sqlite.recovery-*` directory; the server never silently resets or loads JSON.
+  Existing zero-byte files, invalid schema stamps, and stamped-current databases
+  missing required tables/indexes are treated as partial state, not as fresh stores.
+- **Test scope:** `--check` and `MYAGENTTOOL_STATE_DISABLED=1` disable persistence
+  and may use the in-memory adapter. `MYAGENTTOOL_STORE=memory` is rejected when
+  persistence is enabled.

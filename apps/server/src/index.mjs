@@ -48,13 +48,21 @@ if (persistenceEnabled && process.env.MYAGENTTOOL_STATE_LOCK !== "0") {
   releaseStateLock = lock.release;
 }
 
-// SQLite is the default durable backing. The lifecycle component owns lazy
-// adapter loading, startup diagnostics, JSON fallback, and idempotent close.
-const durableStoreLifecycle = await openDurableStoreLifecycle({
-  persistenceEnabled,
-  requestedStore: process.env.MYAGENTTOOL_STORE ?? "sqlite",
-  stateStorePath,
-});
+// SQLite is the only persistence-enabled backing. The lifecycle component owns
+// lazy adapter loading, integrity diagnostics, forensic backup, and idempotent
+// close. Release the single-writer lock if opening fails; no service may start
+// over an older JSON export.
+let durableStoreLifecycle;
+try {
+  durableStoreLifecycle = await openDurableStoreLifecycle({
+    persistenceEnabled,
+    requestedStore: process.env.MYAGENTTOOL_STORE ?? "sqlite",
+    stateStorePath,
+  });
+} catch (error) {
+  releaseStateLock();
+  throw error;
+}
 const sqliteStore = durableStoreLifecycle.store;
 
 // M7: a separate, derived mailbox read index. It is never the source of truth;
@@ -491,9 +499,8 @@ if (typeof httpDependencies.sweepReportSchedule === "function") {
   setInterval(sweepRetention, 3_600_000).unref?.();
 }
 
-// Clean shutdown: flush the durable backing (SQLite mirror, or JSON on the memory
-// path — both via savePersistentState), then write a JSON EXPORT as a rollback/backup
-// artifact (#1042 — a no-op-duplicate on the memory path where JSON is the backing),
+// Clean shutdown: flush the SQLite mirror, then write a JSON EXPORT as an
+// import/inspection artifact (#1042; tests with persistence disabled are no-ops),
 // then release the lock.
 let shuttingDown = false;
 async function shutdown() {

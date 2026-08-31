@@ -53,7 +53,7 @@ test("runtime store boundary preserves the in-memory/test path without durable h
   assert.equal(state.invocations.some((row) => row.id === "inv_boundary"), true);
 });
 
-test("runtime store boundary preserves the JSON fallback path", () => {
+test("direct construction keeps the legacy JSON helper test-scoped", () => {
   const stateDir = mkdtempSync(join(tmpdir(), "store-boundary-json-"));
   const stateStorePath = join(stateDir, "state.json");
   try {

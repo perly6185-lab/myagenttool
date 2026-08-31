@@ -2,8 +2,9 @@
  * #967 (#124 follow-up 2) — a durable SQLite adapter behind the Store interface
  * (docs/engineering/PERSISTENT_STORAGE_DESIGN.md §3). Uses the Node BUILTIN
  * `node:sqlite` (no npm dependency); it is experimental, so it is loaded LAZILY
- * via a dynamic import — nothing imports this module unless the operator opts into
- * the SQLite store, and its tests skip when the runtime lacks `node:sqlite`.
+ * via a dynamic import. A persistence-enabled runtime requires this adapter and
+ * fails startup when `node:sqlite` is unavailable; tests can still skip on older
+ * runtimes.
  *
  * Storage model: one generic `records(collection, id, json)` table — a row per
  * record, the record serialized as JSON. This mirrors the in-memory adapter's
@@ -17,11 +18,22 @@
  * pending changes.
  */
 
+import { existsSync, statSync } from "node:fs";
+
 const SCHEMA_VERSION = 3;
 // Upper bound on a single history page. Aligned with the largest history reader
 // (invocation-trace's MAX_SPAN_LIMIT = 2000) so the SQLite path never silently
 // returns fewer rows than the whole-file JSONL scan would for the same request.
 const MAX_HISTORY_LIMIT = 2000;
+
+export class SqliteStoreIntegrityError extends Error {
+  constructor(message, { cause, details = [] } = {}) {
+    super(message, { cause });
+    this.name = "SqliteStoreIntegrityError";
+    this.code = "sqlite_integrity_failed";
+    this.details = Object.freeze(details);
+  }
+}
 
 /**
  * Async convenience: dynamically import the experimental `node:sqlite`, then open
@@ -46,14 +58,27 @@ export async function openSqliteStore({ path = ":memory:" } = {}) {
  */
 export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
   if (typeof DatabaseSync !== "function") throw new Error("createSqliteStore requires DatabaseSync from node:sqlite.");
+  if (path !== ":memory:" && existsSync(path) && statSync(path).size === 0) {
+    throw new SqliteStoreIntegrityError(`SQLite state file ${path} exists but is empty; refusing to treat a partial file as a new database.`);
+  }
   const db = new DatabaseSync(path);
   try {
+    assertDatabaseIntegrity(db, path);
     db.exec("PRAGMA journal_mode = WAL;");
     // Explicit erasure flows depend on SQLite overwriting deleted cells rather
     // than merely unlinking them from the b-tree. WAL frames are truncated by
     // compactForErasure after the logical delete has committed.
     db.exec("PRAGMA secure_delete = ON;");
-    runMigrations(db);
+    try {
+      runMigrations(db);
+    } catch (cause) {
+      if (cause?.code === "sqlite_schema_newer" || cause?.code === "sqlite_integrity_failed") throw cause;
+      throw new SqliteStoreIntegrityError(
+        `SQLite migration or schema metadata validation failed for ${path} (${cause?.message ?? cause}).`,
+        { cause },
+      );
+    }
+    assertSchemaIntegrity(db, path);
   } catch (error) {
     try {
       db.close();
@@ -333,6 +358,50 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
   return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, getMetadata, setMetadata, appendHistory, queryHistory, deleteHistory, redactHistory, reapHistory, compactForErasure, close, schemaVersion: SCHEMA_VERSION };
 }
 
+function assertDatabaseIntegrity(db, path) {
+  let rows;
+  try {
+    rows = db.prepare("PRAGMA integrity_check").all();
+  } catch (cause) {
+    throw new SqliteStoreIntegrityError(
+      `SQLite integrity check could not read ${path} (${cause?.message ?? cause}).`,
+      { cause },
+    );
+  }
+  const details = rows
+    .map((row) => row?.integrity_check)
+    .filter((value) => typeof value === "string" && value.toLowerCase() !== "ok");
+  if (rows.length !== 1 || rows[0]?.integrity_check?.toLowerCase() !== "ok") {
+    const summary = details.slice(0, 3).join("; ") || "unexpected integrity_check result";
+    throw new SqliteStoreIntegrityError(
+      `SQLite integrity check failed for ${path} (${summary}).`,
+      { details },
+    );
+  }
+}
+
+function assertSchemaIntegrity(db, path) {
+  const required = [
+    ["table", "meta"],
+    ["table", "records"],
+    ["table", "history"],
+    ["index", "history_by_invocation"],
+    ["index", "history_by_collection"],
+    ["index", "execution_action_idempotency_key"],
+    ["index", "execution_action_idempotency_by_auto_run"],
+  ];
+  const findObject = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = ? AND name = ?");
+  const missing = required
+    .filter(([type, name]) => !findObject.get(type, name)?.present)
+    .map(([type, name]) => `${type}:${name}`);
+  if (missing.length > 0) {
+    throw new SqliteStoreIntegrityError(
+      `SQLite schema integrity check failed for ${path}; missing ${missing.join(", ")}.`,
+      { details: missing },
+    );
+  }
+}
+
 /**
  * Numbered forward migrations applied in a transaction. The store records its
  * applied version in `meta`; a store version AHEAD of this binary refuses to open
@@ -340,9 +409,15 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
  */
 function runMigrations(db) {
   db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)");
-  const current = Number(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()?.value ?? 0);
+  const storedVersion = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()?.value;
+  const current = Number(storedVersion ?? 0);
+  if (!Number.isInteger(current) || current < 0) {
+    throw new SqliteStoreIntegrityError(`SQLite schema_version ${JSON.stringify(storedVersion)} is invalid.`);
+  }
   if (current > SCHEMA_VERSION) {
-    throw new Error(`SQLite store schema v${current} is newer than this binary (v${SCHEMA_VERSION}); refusing to open.`);
+    const error = new Error(`SQLite store schema v${current} is newer than this binary (v${SCHEMA_VERSION}); refusing to open.`);
+    error.code = "sqlite_schema_newer";
+    throw error;
   }
   const migrations = [
     // v1: the generic record table.

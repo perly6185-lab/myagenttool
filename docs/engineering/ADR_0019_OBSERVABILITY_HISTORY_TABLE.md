@@ -6,6 +6,14 @@ Date: 2026-07-17
 
 Related issue: [#1182](https://github.com/perly6185-lab/myagenttool/issues/1182)
 
+> **Production-path amendment (2026-08-31, #1618):** references below to a
+> memory/Node-degraded server backing describe the original rollout and old
+> binaries. The current persistence-enabled server is SQLite-only and fails
+> startup if SQLite is unavailable or corrupt. JSON/JSONL remains an offline
+> import/export and test compatibility format; it is not a live production
+> fallback. Rollback therefore preserves/restores a known-good SQLite database
+> or imports JSON into a new SQLite database instead of serving JSON directly.
+
 ## Context
 
 Workstream 2 slices 1–5 gave the high-volume observability collections

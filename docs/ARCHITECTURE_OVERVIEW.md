@@ -55,7 +55,7 @@ flowchart TB
         GRANT["Approval Grants<br/>单次 · 10min"]
         APP["Applications Registry<br/>services/applications.mjs"]
         AUD["Audit / Trace / Span<br/>traces · spans · events"]
-        STORE["SQLite Store<br/>runtime/store · JSON 快照兜底"]
+        STORE["SQLite Store<br/>runtime/store · JSON 仅导入/导出"]
     end
 
     subgraph XPORT["🔌 实时传输 · HTTP + polling"]
