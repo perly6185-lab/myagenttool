@@ -2,7 +2,7 @@ import { AlertTriangle, Bot, CheckCircle2, Database, FileCheck2, FolderGit2, Rou
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import type { ExecutionStartSummary } from "./execution-start-summary";
 
 export function ExecutionStartConfirmation({
@@ -16,6 +16,7 @@ export function ExecutionStartConfirmation({
   onResolveBlocked,
   onConfirm,
   onClose,
+  returnFocusRef,
 }: {
   open: boolean;
   summary: ExecutionStartSummary;
@@ -27,6 +28,7 @@ export function ExecutionStartConfirmation({
   onResolveBlocked?: () => void;
   onConfirm: () => void;
   onClose: () => void;
+  returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
   const zh = language === "zh";
   const blockingIssues = summary.issues.filter((issue) => issue.severity === "blocking");
@@ -40,6 +42,7 @@ export function ExecutionStartConfirmation({
       size="lg"
       title={zh ? "确认让 AI 开始" : "Confirm AI start"}
       description={zh ? "请确认 AI 要做什么、依据什么资料，以及怎样算完成。" : "Confirm what AI will do, which materials it may use, and how completion will be checked."}
+      returnFocusRef={returnFocusRef}
       footer={(
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button type="button" variant="secondary" disabled={pending} onClick={onClose}>

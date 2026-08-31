@@ -505,6 +505,7 @@ export function WorkItemSummaryView({
   const [resultPreview, setResultPreview] = useState<DeliveryPreview | null>(null);
   const resultPreviewRequest = useRef(0);
   const resultAutoOpenedFor = useRef<string | null>(null);
+  const startActionRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     setItem(null);
@@ -2328,6 +2329,7 @@ export function WorkItemSummaryView({
             <p className="mt-1 text-sm leading-relaxed text-foreground/90">{primaryGuidance}</p>
             {item.lastProgressSummary ? <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{copy.lastProgress}: {item.lastProgressSummary}</p> : null}
             <Button
+              ref={startActionRef}
               className="mt-3 w-full sm:w-auto"
               data-testid={startEligible ? "review-and-start-ai" : undefined}
               disabled={Boolean(actionPending) || readinessChecking || (hasRetryableExecution && executionActionLocked)}
@@ -3429,6 +3431,7 @@ export function WorkItemSummaryView({
         } : undefined}
         onClose={() => { if (actionPending !== "start") setStartConfirmationOpen(false); }}
         onConfirm={() => { void startAiWork(); }}
+        returnFocusRef={startActionRef}
       />
       <WorkItemProgressDialog
         target={progressTarget}

@@ -1,10 +1,13 @@
 import { expect, test, type Page } from "playwright/test";
 
-const project = { id: "prj_1", name: "E2E Repository", status: "active" };
+const project = { id: "prj_1", name: "E2E Repository", status: "active", path: "/tmp/e2e-repository" };
 let workItem: Record<string, unknown> | null;
 let autoRunStarted: boolean;
 let importedViaExternal: boolean;
 let autoRunReady: boolean;
+let executionDraftRequests: number;
+let executionPrepareRequests: number;
+let executionConfirmRequests: number;
 let repairWorkItem: Record<string, unknown> | null;
 let ordinaryDeliveryReady: boolean;
 let ordinaryDeliveryVersion: number;
@@ -66,6 +69,26 @@ function reviewedCodingWorkItem(): Record<string, unknown> {
     executionState: "completed",
     executionBindings: [{ kind: "auto_run", targetId: "aur_1", worktreeId: "wt_1", createdAt: "2026-07-24T00:01:00.000Z" }],
     revision: 3, archivedAt: null, updatedAt: "2026-07-24T00:03:00.000Z",
+  };
+}
+
+function unplannedCodingWorkItem(): Record<string, unknown> {
+  return {
+    id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
+    title: "Prepare the release readiness report",
+    body: "Summarize release blockers and verify the result.",
+    type: "task", priority: "p1", status: "backlog", state: "open",
+    labels: [], assigneeIds: [], waitingOn: "none", dueDate: null, plannedDate: null,
+    acceptanceCriteria: [], verificationSop: [],
+    executionContractSource: null, executionContractConfirmedAt: null,
+    executionContractGate: {
+      ready: false,
+      missing: ["acceptance_criteria", "verification_sop", "confirmation"],
+      source: null,
+      confirmedAt: null,
+    },
+    executionState: "unclaimed", executionBindings: [], revision: 1, archivedAt: null,
+    updatedAt: "2026-07-24T00:00:00.000Z",
   };
 }
 
@@ -140,6 +163,7 @@ async function mockApi(page: Page) {
       return route.fulfill({ status: 201, json: { workItems: [workItem] } });
     }
     if (url.pathname === "/api/work-items/assist/draft" && method === "POST") {
+      executionDraftRequests += 1;
       return route.fulfill({ json: {
         draft: {
           acceptanceCriteria: ["Provider handoff is complete"],
@@ -358,22 +382,32 @@ async function mockApi(page: Page) {
       return route.fulfill({ json: { workItem } });
     }
     if (url.pathname === "/api/work-items/lwi_1/execution-contract/prepare" && method === "POST") {
+      executionPrepareRequests += 1;
       const body = request.postDataJSON();
       workItem = {
         ...workItem,
         acceptanceCriteria: body.draftOverride.acceptanceCriteria,
         verificationSop: body.draftOverride.verificationSop,
         executionContractSource: "assisted",
-        executionContractConfirmedAt: "2026-07-24T00:00:30.000Z",
-        executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: "2026-07-24T00:00:30.000Z" },
+        executionContractConfirmedAt: null,
+        executionContractGate: { ready: false, missing: ["confirmation"], source: "assisted", confirmedAt: null },
         revision: Number(workItem?.revision ?? 0) + 1,
       };
       return route.fulfill({ json: { workItem } });
     }
     if (url.pathname === "/api/work-items/lwi_1/execution-contract/confirm" && method === "POST") {
+      executionConfirmRequests += 1;
+      await new Promise((resolve) => setTimeout(resolve, 75));
       workItem = {
         ...workItem,
         executionPolicy: "auto", status: "ready", waitingOn: "ai", executionState: "queued",
+        executionContractConfirmedAt: "2026-07-24T00:01:00.000Z",
+        executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: "2026-07-24T00:01:00.000Z" },
+        executionStartReceipt: {
+          schemaVersion: 1, id: "wsr_e2e", status: "queued", reasonCode: "waiting_for_turn",
+          reasonDetail: null, canCancel: true, agentId: "agt_1", targetId: null,
+          requestedAt: "2026-07-24T00:01:00.000Z", updatedAt: "2026-07-24T00:01:00.000Z",
+        },
         revision: Number(workItem?.revision ?? 0) + 1,
       };
       return route.fulfill({ json: { workItem } });
@@ -473,6 +507,9 @@ test.beforeEach(async ({ page }) => {
   autoRunStarted = false;
   importedViaExternal = false;
   autoRunReady = true;
+  executionDraftRequests = 0;
+  executionPrepareRequests = 0;
+  executionConfirmRequests = 0;
   repairWorkItem = null;
   ordinaryDeliveryReady = false;
   ordinaryDeliveryVersion = 1;
@@ -563,6 +600,116 @@ test("creates an ordinary task from the mobile task modal without a dead collaps
   await expect(dialog.getByText("Task created and added to your boards.")).toBeVisible();
 });
 
+for (const fixture of [
+  {
+    name: "desktop English",
+    locale: "en",
+    viewport: { width: 1366, height: 768 },
+    start: "Let AI start",
+    resume: "Review and start AI",
+    dialog: "Confirm AI start",
+    confirm: "Confirm and start AI",
+  },
+  {
+    name: "desktop Chinese",
+    locale: "zh-CN",
+    viewport: { width: 1366, height: 768 },
+    start: "交给 AI 开始处理",
+    resume: "核对并让 AI 开始",
+    dialog: "确认让 AI 开始",
+    confirm: "确认并让 AI 开始",
+  },
+  {
+    name: "390 px English",
+    locale: "en",
+    viewport: { width: 390, height: 844 },
+    start: "Let AI start",
+    resume: "Review and start AI",
+    dialog: "Confirm AI start",
+    confirm: "Confirm and start AI",
+  },
+  {
+    name: "390 px Chinese",
+    locale: "zh-CN",
+    viewport: { width: 390, height: 844 },
+    start: "交给 AI 开始处理",
+    resume: "核对并让 AI 开始",
+    dialog: "确认让 AI 开始",
+    confirm: "确认并让 AI 开始",
+  },
+] as const) {
+  test(`prepares, cancels, restores, and confirms one AI start on ${fixture.name}`, async ({ page }, testInfo) => {
+    await page.setViewportSize(fixture.viewport);
+    workItem = unplannedCodingWorkItem();
+    // This flag makes the shared fixture return no synthetic legacy Run, so
+    // the task remains genuinely unstarted until this test confirms it.
+    importedViaExternal = true;
+    await page.addInitScript(({ locale }) => {
+      window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+        version: 1,
+        state: { locale, section: "task", experienceMode: "ordinary" },
+      }));
+    }, { locale: fixture.locale });
+    await page.goto("/?section=task&task=lwi_1", { waitUntil: "domcontentloaded" });
+
+    const start = page.getByTestId("review-and-start-ai");
+    await expect(start).toHaveText(fixture.start, { timeout: 15_000 });
+    await start.focus();
+    await expect(start).toBeFocused();
+    await start.press("Enter");
+
+    const confirmation = page.getByRole("dialog", { name: fixture.dialog });
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation.getByText("Prepare the release readiness report", { exact: true })).toBeVisible();
+    await expect(confirmation.getByText("Provider handoff is complete", { exact: true })).toBeVisible();
+    await expect(confirmation.getByText("Verify the provider handoff end to end", { exact: true })).toBeVisible();
+    await expect(confirmation.getByText("E2E Repository", { exact: true })).toBeVisible();
+    await expect(confirmation.getByText("/tmp/e2e-repository", { exact: true })).toBeVisible();
+    expect(executionDraftRequests).toBe(1);
+    expect(executionPrepareRequests).toBe(1);
+    expect(executionConfirmRequests).toBe(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    expect(await confirmation.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`ai-start-confirmation-${fixture.locale}-${fixture.viewport.width}.png`),
+      fullPage: true,
+    });
+
+    await page.keyboard.press("Escape");
+    await expect(confirmation).toBeHidden();
+    await expect(start).toBeFocused();
+    expect(executionConfirmRequests).toBe(0);
+    expect(workItem).toMatchObject({
+      acceptanceCriteria: ["Provider handoff is complete"],
+      verificationSop: ["Verify the provider handoff end to end"],
+      executionContractConfirmedAt: null,
+    });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const resume = page.getByTestId("review-and-start-ai");
+    await expect(resume).toHaveText(fixture.resume);
+    await resume.focus();
+    await resume.press("Enter");
+    const restoredConfirmation = page.getByRole("dialog", { name: fixture.dialog });
+    await expect(restoredConfirmation).toBeVisible();
+    expect(executionDraftRequests).toBe(1);
+    expect(executionPrepareRequests).toBe(1);
+
+    const confirm = restoredConfirmation.getByRole("button", { name: fixture.confirm });
+    await confirm.focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => executionConfirmRequests).toBe(1);
+    await expect(restoredConfirmation).toBeHidden();
+    expect(workItem).toMatchObject({
+      executionPolicy: "auto",
+      waitingOn: "ai",
+      executionState: "queued",
+      executionContractGate: { ready: true, missing: [] },
+    });
+  });
+}
+
 test("imports a GitLab issue, opens its Local Issue, and schedules AI from simple details", async ({ page }) => {
   await page.goto("/?section=externalWork", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Create tasks from issues" }).click();
@@ -593,7 +740,7 @@ test("imports a GitLab issue, opens its Local Issue, and schedules AI from simpl
   await page.getByRole("dialog", { name: "Confirm AI start" })
     .getByRole("button", { name: "Confirm and start AI" }).click();
   await scheduleRequest;
-  await expect(detail.getByText(/AI accepted the task/i)).toBeVisible();
+  await expect(detail.getByRole("heading", { name: "AI accepted the task and is queued" })).toBeVisible();
 });
 
 test("browses and bulk imports GitLab issues on a narrow keyboard-accessible dialog", async ({ page }) => {
@@ -711,7 +858,7 @@ test("completes an ordinary coding task through revision and durable local deliv
   await page.getByRole("dialog", { name: "Confirm AI start" })
     .getByRole("button", { name: "Confirm and start AI" }).click();
   await scheduleRequest;
-  await expect(detail.getByText(/AI accepted the task/i)).toBeVisible();
+  await expect(detail.getByRole("heading", { name: "AI accepted the task and is queued" })).toBeVisible();
 
   autoRunStarted = true;
   ordinaryDeliveryReady = true;

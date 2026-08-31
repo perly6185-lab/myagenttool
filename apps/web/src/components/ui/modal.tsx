@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
@@ -17,6 +17,7 @@ export function Modal({
   size = "md",
   closeDisabled = false,
   bodyClassName,
+  returnFocusRef,
 }: {
   open: boolean;
   onClose: () => void;
@@ -28,6 +29,7 @@ export function Modal({
   size?: "md" | "lg" | "xl" | "2xl" | "full" | "viewport";
   closeDisabled?: boolean;
   bodyClassName?: string;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const { t } = useAppTranslation();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -36,13 +38,20 @@ export function Modal({
   // Capture during render, before a descendant's `autoFocus` runs in the commit
   // phase. Waiting for an effect can otherwise remember the first form field
   // inside the dialog instead of the control that opened it.
-  if (open && document.activeElement instanceof HTMLElement && !dialogRef.current?.contains(document.activeElement)) {
-    restoreFocusRef.current = document.activeElement;
+  const explicitReturnTarget = returnFocusRef?.current ?? null;
+  const returnTarget = open
+    ? explicitReturnTarget
+      ?? (document.activeElement instanceof HTMLElement && !dialogRef.current?.contains(document.activeElement)
+        ? document.activeElement
+        : null)
+    : null;
+  if (open && returnTarget) {
+    restoreFocusRef.current = returnTarget;
     restoreFocusIdentityRef.current = {
-      tagName: document.activeElement.tagName,
-      id: document.activeElement.id,
-      ariaLabel: document.activeElement.getAttribute("aria-label") ?? "",
-      text: document.activeElement.textContent?.replace(/\s+/g, " ").trim() ?? "",
+      tagName: returnTarget.tagName,
+      id: returnTarget.id,
+      ariaLabel: returnTarget.getAttribute("aria-label") ?? "",
+      text: returnTarget.textContent?.replace(/\s+/g, " ").trim() ?? "",
     };
   }
   const onCloseRef = useRef(onClose);
@@ -52,13 +61,18 @@ export function Modal({
   useEffect(() => {
     if (!open) return;
     const dialog = dialogRef.current;
-    if (document.activeElement instanceof HTMLElement && !dialog?.contains(document.activeElement)) {
-      restoreFocusRef.current = document.activeElement;
+    const explicitTarget = returnFocusRef?.current ?? null;
+    const activeTarget = document.activeElement instanceof HTMLElement && !dialog?.contains(document.activeElement)
+      ? document.activeElement
+      : null;
+    const target = explicitTarget ?? activeTarget;
+    if (target) {
+      restoreFocusRef.current = target;
       restoreFocusIdentityRef.current = {
-        tagName: document.activeElement.tagName,
-        id: document.activeElement.id,
-        ariaLabel: document.activeElement.getAttribute("aria-label") ?? "",
-        text: document.activeElement.textContent?.replace(/\s+/g, " ").trim() ?? "",
+        tagName: target.tagName,
+        id: target.id,
+        ariaLabel: target.getAttribute("aria-label") ?? "",
+        text: target.textContent?.replace(/\s+/g, " ").trim() ?? "",
       };
     }
     const focusable = () => [...(dialog?.querySelectorAll<HTMLElement>(
@@ -106,7 +120,7 @@ export function Modal({
         replacement?.focus();
       });
     };
-  }, [closeDisabled, open]);
+  }, [closeDisabled, open, returnFocusRef]);
 
   if (!open) return null;
 
