@@ -102,6 +102,7 @@ jobs:
         run: |
           pnpm release:check
           pnpm release:candidate:check
+          pnpm desktop:release:contract:check
           pnpm deploy:check
 
       - name: Draft release notes

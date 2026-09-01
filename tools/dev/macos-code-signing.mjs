@@ -78,7 +78,7 @@ export function signMacApp({ appPath, requireStable = false, preferredIdentity =
   const signingInfoResult = run("codesign", ["-d", "-vvv", target], { allowStderr: true });
   const teamIdentifier = teamIdentifierOf(`${signingInfoResult.stdout ?? ""}\n${signingInfoResult.stderr ?? ""}`);
   if (!teamIdentifier) throw new Error("packaged app did not receive an Apple Team Identifier required for Keychain continuity");
-  const expectedTeamIdentifier = process.env.MYAGENTTOOL_MAC_TEAM_ID?.trim();
+  const expectedTeamIdentifier = process.env.APPLE_TEAM_ID?.trim() || process.env.MYAGENTTOOL_MAC_TEAM_ID?.trim();
   if (expectedTeamIdentifier && teamIdentifier !== expectedTeamIdentifier) {
     throw new Error(`signed with unexpected Apple Team Identifier: ${teamIdentifier}`);
   }

@@ -54,6 +54,10 @@ files:
 mac:
   identity: "-"
   hardenedRuntime: true
+  target:
+    - target: dmg
+      arch:
+        - arm64
 
 win:
   target:

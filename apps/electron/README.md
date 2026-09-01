@@ -34,6 +34,8 @@ pnpm desktop:pack:mac
 pnpm desktop:dist:mac
 pnpm desktop:pack:linux
 pnpm desktop:dist:linux
+pnpm desktop:pack:linux:arm64
+pnpm desktop:dist:linux:arm64
 ```
 
 `desktop:pack` creates an unpacked native Windows app for smoke checks and
@@ -69,9 +71,23 @@ more than one suitable identity exists. macOS may ask once when credentials are
 migrated from an older ad-hoc build; packages signed for the same bundle by the
 same Apple team can then reuse that approval.
 
-Distribution builds still require a Developer ID Application certificate and
-Apple notarization. Linux branding and the branded icon are also release
-prerequisites.
+Distribution-format builds are release candidates, not approved releases. The
+initial channel uses human-approved manual downloads and has no runtime update
+check, auto-update, or automatic downgrade. Before privileged release work, run
+the credential-name-only preflight for the target platform:
+
+```sh
+pnpm desktop:release:preflight -- --platform win32 --arch x64
+pnpm desktop:release:preflight -- --platform darwin --arch arm64
+pnpm desktop:release:preflight -- --platform linux --arch x64
+pnpm desktop:release:preflight -- --platform linux --arch arm64
+```
+
+Distribution builds still require the evidence and human approval defined in
+[`docs/engineering/DESKTOP_RELEASE_CONTRACT.md`](../../docs/engineering/DESKTOP_RELEASE_CONTRACT.md).
+Real Windows signing plus macOS Developer ID signing and notarization remain
+blocked on #1617. Linux has no platform code-signing credential in the initial
+contract; checksums and native package evidence are still required.
 
 ## Smoke Check
 
