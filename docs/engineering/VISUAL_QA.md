@@ -1,6 +1,6 @@
 # Visual QA
 
-This document defines the M0 visual QA path for the Web Console.
+This document defines the browser-backed visual QA path for the Web Console.
 
 Use the repo-level [DESIGN.md](../../DESIGN.md) as the visual consistency
 baseline for product-facing Web Console changes. Use
@@ -39,16 +39,30 @@ pnpm visual:qa:browser
 ```
 
 `visual:qa:browser` starts an isolated local API and static Web server, injects
-deterministic state through the normal `/api/state` boundary, and captures 12
-screenshots: empty, ready, running, succeeded, approval, and disconnected at
-1366 x 768 and 390 x 844. It fails on a blank page, horizontal overflow, missing
-task/project/agent controls, or missing Safety, Data, Cost, and Computer panels.
+deterministic state through the normal `/api/state` boundary, and captures every
+selected scenario at 1366 x 768 and 390 x 844. Empty, ready, running, succeeded,
+approval, and disconnected are required foundation scenarios; maintained product
+flows add further scenarios without requiring a hand-edited screenshot count.
+The generated report is the source of truth for the available and selected
+scenario catalog, expected screenshot count, actual screenshot count, viewport,
+path, and per-screenshot assertions.
+
+The gate fails on a blank page, horizontal overflow, missing primary controls,
+or missing scenario-specific owner surfaces. Scenario assertions also protect
+collapsed technical detail, result hierarchy, and work-column ownership. A pure
+scripted violation fixture must trip the overflow, blank-page, primary-control,
+technical-hierarchy, and column-ownership guards, so the failure path remains
+covered without checking a broken UI into the application.
+
+Run one state while developing with `pnpm visual:qa:browser -- --scenario=ready`.
 The ready and run states use a Codex CLI agent so selector and session-oriented
 task controls remain in coverage.
 
 Generated screenshots remain under the gitignored
-`.myagenttool/visual-qa/screenshots/` directory. Attach the relevant files and
-`.myagenttool/visual-qa/latest.md` to the PR instead of committing routine output.
+`.myagenttool/visual-qa/screenshots/` directory. Each run replaces that directory
+so its files match the latest manifest and cannot be confused with stale evidence.
+Attach the relevant files and `.myagenttool/visual-qa/latest.md` to the PR instead
+of committing routine output.
 
 ## Manual Screenshot Checklist
 
@@ -72,6 +86,9 @@ Confirm:
 - Technical IDs do not dominate the first screen.
 - Safety, data, cost, cancellation, and audit are described in plain language.
 
-## Follow-up Coverage
+## Interactive Review Follow-up
 
-Issue #136 tracks Visual QA and Design Mode for AI-assisted frontend work.
+Issue #136 owns the automated screenshot and validation contract. Issue #1834
+tracks the separate interactive review page and selected-region feedback flow;
+it must consume the generated manifest and keep external Issue creation behind
+explicit approval.

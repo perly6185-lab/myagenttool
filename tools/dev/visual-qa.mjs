@@ -1,13 +1,22 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-// M0 visual QA for the React + Vite Web Console. Lightweight structural checks
-// (per docs/engineering/VISUAL_QA.md) until a browser automation dependency is
-// added; screenshots attach automatically when Playwright/Puppeteer is present.
+import {
+  REQUIRED_VISUAL_QA_SCENARIOS,
+  SCRIPTED_VIOLATION_CODES,
+  VISUAL_QA_VIEWPORTS,
+  detectVisualQaViolations,
+  expectedVisualQaScreenshotCount,
+  scriptedVisualQaViolationFixture,
+  validateVisualQaScenarioCatalog,
+} from "./visual-qa-contract.mjs";
+
+// Browser-backed visual QA for the React + Vite Web Console. The generated
+// manifest is the source of truth for scenario, viewport, and screenshot count.
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const webRoot = resolve(repoRoot, "apps/web");
 const srcRoot = resolve(webRoot, "src");
@@ -26,13 +35,10 @@ const src = existsSync(srcRoot) ? collectSource(srcRoot) : "";
 
 const browserAutomation = await detectBrowserAutomation();
 
-const viewports = [
-  { name: "desktop", width: 1366, height: 768 },
-  { name: "mobile", width: 390, height: 844 }
-];
+const viewports = VISUAL_QA_VIEWPORTS;
 const screenshotResult = browserAutomation.driver
   ? await captureScreenshots(browserAutomation.driver)
-  : { status: "skipped", screenshots: [], reason: browserAutomation.reason };
+  : { status: "skipped", screenshots: [], reason: browserAutomation.reason, scenarioCatalog: [], selectedScenarios: [], expectedScreenshotCount: null };
 
 // Top-level nav surfaces (stable keys) the console must expose. Labels are
 // localized and therefore no longer live as English literals in sections.ts.
@@ -82,7 +88,15 @@ const checks = [
       && useConsoleState.includes("fetchState")
       && /request<ConsoleSnapshot>\("GET", "\/api\/state"/.test(apiClient),
     "User-facing state snapshot type and the /api/state polling mapper exist."
-  )
+  ),
+  check(
+    "scripted layout and IA violation fixture",
+    () => {
+      const codes = detectVisualQaViolations(scriptedVisualQaViolationFixture()).map((finding) => finding.code);
+      return SCRIPTED_VIOLATION_CODES.every((code) => codes.includes(code));
+    },
+    "The fixture trips overflow, blank-page, primary-control, technical-hierarchy, and column-ownership guards."
+  ),
 ];
 
 const findings = checks.map((item) => item());
@@ -97,6 +111,13 @@ const artifact = {
     screenshotStatus: screenshotResult.status,
     screenshots: screenshotResult.screenshots,
     screenshotReason: screenshotResult.reason
+  },
+  scenarioCoverage: {
+    required: [...REQUIRED_VISUAL_QA_SCENARIOS],
+    available: screenshotResult.scenarioCatalog,
+    selected: screenshotResult.selectedScenarios,
+    expectedScreenshotCount: screenshotResult.expectedScreenshotCount,
+    actualScreenshotCount: screenshotResult.screenshots.length,
   },
   viewports,
   navSurfaces: NAV_SURFACES,
@@ -176,13 +197,20 @@ async function captureScreenshots(driver) {
     return {
       status: "skipped",
       screenshots,
-      reason: "No built console (run `pnpm --filter @myagenttool/web build`) to screenshot."
+      reason: "No built console (run `pnpm --filter @myagenttool/web build`) to screenshot.",
+      scenarioCatalog: [],
+      selectedScenarios: [],
+      expectedScreenshotCount: null,
     };
   }
   const screenshotDir = resolve(artifactDir, "screenshots");
+  // `screenshots/` represents one run. Remove old generated evidence so a
+  // reviewer cannot accidentally attach a stale scenario that is absent from
+  // the current manifest.
+  rmSync(screenshotDir, { recursive: true, force: true });
   mkdirSync(screenshotDir, { recursive: true });
   if (driver.name !== "playwright") {
-    return { status: "failed", screenshots, reason: `Unsupported browser driver: ${driver.name}` };
+    return { status: "failed", screenshots, reason: `Unsupported browser driver: ${driver.name}`, scenarioCatalog: [], selectedScenarios: [], expectedScreenshotCount: null };
   }
   const apiPort = await availablePort();
   const apiUrl = `http://127.0.0.1:${apiPort}`;
@@ -197,20 +225,29 @@ async function captureScreenshots(driver) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const web = startWebServer();
+  let scenarioCatalog = [];
+  let selectedScenarioNames = [];
+  let expectedScreenshotCount = null;
   try {
     const webUrl = await web.ready;
     await waitForApi(apiUrl);
     const baseline = await fetchJson(`${apiUrl}/api/state`);
+    const scenarios = visualScenarios(baseline);
+    scenarioCatalog = validateVisualQaScenarioCatalog(scenarios.map((scenario) => scenario.name)).available;
+    const selectedScenarios = scenarioFilter
+      ? scenarios.filter((scenario) => scenario.name === scenarioFilter)
+      : scenarios;
+    if (scenarioFilter && selectedScenarios.length === 0) {
+      throw new Error(`Unknown visual QA scenario: ${scenarioFilter}`);
+    }
+    selectedScenarioNames = selectedScenarios.map((scenario) => scenario.name);
+    expectedScreenshotCount = expectedVisualQaScreenshotCount({
+      scenarioNames: selectedScenarioNames,
+      viewportCount: viewports.length,
+    });
     const browser = await driver.module.chromium.launch();
     try {
       for (const viewport of viewports) {
-        const scenarios = visualScenarios(baseline);
-        const selectedScenarios = scenarioFilter
-          ? scenarios.filter((scenario) => scenario.name === scenarioFilter)
-          : scenarios;
-        if (scenarioFilter && selectedScenarios.length === 0) {
-          throw new Error(`Unknown visual QA scenario: ${scenarioFilter}`);
-        }
         for (const scenario of selectedScenarios) {
           const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
           await page.route("**/api/state", (route) => {
@@ -306,16 +343,30 @@ async function captureScreenshots(driver) {
             documentWidth: document.documentElement.scrollWidth,
             bodyWidth: document.body.scrollWidth,
             textLength: document.body.innerText.trim().length,
+            visiblePrimaryControlCount: Array.from(document.querySelectorAll("button, a[href], input[type=submit]"))
+              .filter((element) => {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+              }).length,
           }));
-          if (layout.documentWidth > layout.viewportWidth + 1 || layout.bodyWidth > layout.viewportWidth + 1) {
-            throw new Error(`${scenario.name}/${viewport.name} has horizontal overflow (${Math.max(layout.documentWidth, layout.bodyWidth)} > ${layout.viewportWidth})`);
+          const layoutViolations = detectVisualQaViolations({
+            ...layout,
+            requiresPrimaryControls: !scenario.disconnected,
+          });
+          if (layoutViolations.length) {
+            throw new Error(`${scenario.name}/${viewport.name}: ${layoutViolations.map((finding) => finding.detail).join("; ")}`);
           }
-          if (layout.textLength < 40) throw new Error(`${scenario.name}/${viewport.name} rendered an unexpectedly blank page`);
           screenshots.push({
             scenario: scenario.name,
             viewport: viewport.name,
             path: relativeArtifactPath(filePath),
-            assertions: { noHorizontalOverflow: true, nonBlank: true, keyPanelsVisible: !scenario.disconnected },
+            assertions: {
+              noHorizontalOverflow: true,
+              nonBlank: true,
+              primaryControlVisible: !scenario.disconnected,
+              keyPanelsVisible: !scenario.disconnected,
+            },
           });
           if (["ready", "home-workbench"].includes(scenario.name)) {
             const board = page.locator('[data-testid="daily-work-board"]:visible');
@@ -341,9 +392,26 @@ async function captureScreenshots(driver) {
     } finally {
       await browser.close();
     }
-    return { status: "captured", screenshots, reason: `Captured ${screenshots.length} state/viewport screenshots with Playwright.` };
+    if (screenshots.length !== expectedScreenshotCount) {
+      throw new Error(`Captured ${screenshots.length} screenshots; expected ${expectedScreenshotCount} from the selected scenario/viewport contract.`);
+    }
+    return {
+      status: "captured",
+      screenshots,
+      reason: `Captured ${screenshots.length} scenario/viewport screenshots with Playwright.`,
+      scenarioCatalog,
+      selectedScenarios: selectedScenarioNames,
+      expectedScreenshotCount,
+    };
   } catch (error) {
-    return { status: "failed", screenshots, reason: error instanceof Error ? error.message : String(error) };
+    return {
+      status: "failed",
+      screenshots,
+      reason: error instanceof Error ? error.message : String(error),
+      scenarioCatalog,
+      selectedScenarios: selectedScenarioNames,
+      expectedScreenshotCount,
+    };
   } finally {
     server.kill();
     web.close();
@@ -1468,6 +1536,14 @@ function markdownReport(report) {
         ? report.screenshotAutomation.screenshots.map((item) => `- ${item.scenario ?? "default"} / ${item.viewport}: ${item.path}`)
         : ["- None."]
     ),
+    "",
+    "## Scenario Coverage",
+    "",
+    `Required scenarios: ${report.scenarioCoverage.required.join(", ")}`,
+    `Available scenarios: ${report.scenarioCoverage.available.length ? report.scenarioCoverage.available.join(", ") : "Not loaded."}`,
+    `Selected scenarios: ${report.scenarioCoverage.selected.length ? report.scenarioCoverage.selected.join(", ") : "None."}`,
+    `Expected screenshots: ${report.scenarioCoverage.expectedScreenshotCount ?? "Not calculated."}`,
+    `Actual screenshots: ${report.scenarioCoverage.actualScreenshotCount}`,
     "",
     "## Viewports",
     "",
