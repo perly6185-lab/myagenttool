@@ -2,9 +2,10 @@ import type { Server } from "node:http";
 import https from "node:https";
 import { createHash, generateKeyPairSync, X509Certificate } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "playwright/test";
 
 type Flow = "complete" | "safe_abort";
@@ -17,6 +18,7 @@ let httpsServer: Server | null = null;
 let runtime: { httpDependencies: { persistStateNow: () => unknown } } | null = null;
 let remoteFixtures: Awaited<ReturnType<typeof startRemoteFixtures>> | null = null;
 const previousCredentialToken = process.env.MYAGENT_DESKTOP_CREDENTIAL_TOKEN;
+const visualQaDir = join(fileURLToPath(new URL(".", import.meta.url)), "../../../docs/engineering/visual-qa/my-hosts-operations-pilot");
 
 test.describe.configure({ mode: "serial" });
 
@@ -297,6 +299,11 @@ test("real server closes an explicitly consented operations pilot and exports an
   await page.getByRole("button", { name: "确认并处理" }).click();
   await expect(page.getByText("网站已经恢复访问")).toBeVisible();
   await expect(page.getByText("处置已结束，请完成两项反馈")).toBeVisible({ timeout: 10_000 });
+  if (process.env.CAPTURE_VISUAL_QA === "true") {
+    mkdirSync(visualQaDir, { recursive: true });
+    await page.getByTestId("host-operations-pilot-participant").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(visualQaDir, "participant-feedback-1280w.png"), fullPage: true });
+  }
   await page.getByRole("button", { name: "清楚", exact: true }).click();
   await page.getByRole("combobox", { name: "整体容易程度" }).selectOption("5");
   await page.getByRole("button", { name: "完成并提交" }).click();
@@ -311,6 +318,11 @@ test("real server closes an explicitly consented operations pilot and exports an
   await expect(workbench.getByText("真实主机处置试用")).toBeVisible();
   await expect(workbench.getByText("100%", { exact: true })).toBeVisible();
   await expect(workbench.getByText("5/5", { exact: true })).toBeVisible();
+  if (process.env.CAPTURE_VISUAL_QA === "true") {
+    mkdirSync(visualQaDir, { recursive: true });
+    await workbench.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(visualQaDir, "professional-workbench-1280w.png"), fullPage: true });
+  }
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出匿名证据" }).click();
