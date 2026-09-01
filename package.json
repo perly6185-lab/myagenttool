@@ -60,6 +60,8 @@
     "desktop:preflight:mac": "node tools/dev/desktop-build-preflight.mjs --platform darwin --arch arm64",
     "desktop:preflight:linux": "node tools/dev/desktop-build-preflight.mjs --platform linux --arch x64",
     "desktop:preflight:linux:arm64": "node tools/dev/desktop-build-preflight.mjs --platform linux --arch arm64",
+    "desktop:release:preflight": "node tools/dev/desktop-release-preflight.mjs --mode release",
+    "desktop:release:contract:check": "node --test tools/dev/test/desktop-release-preflight.test.mjs",
     "desktop:pack": "pnpm desktop:preflight:win && pnpm desktop:prepare-assets && node tools/dev/desktop-build-preflight.mjs --platform win32 --arch x64 --portable-git && pnpm --filter @myagenttool/web build && electron-builder --win dir --x64 -c apps/electron/electron-builder.yml && node tools/dev/desktop-package-verify.mjs --platform win32 --arch x64",
     "desktop:dist": "pnpm desktop:preflight:win && pnpm desktop:prepare-assets && node tools/dev/desktop-build-preflight.mjs --platform win32 --arch x64 --portable-git && pnpm --filter @myagenttool/web build && electron-builder --win nsis --x64 -c apps/electron/electron-builder.yml && node tools/dev/desktop-package-verify.mjs --platform win32 --arch x64",
     "desktop:pack:mac": "pnpm desktop:preflight:mac && pnpm --filter @myagenttool/web build && electron-builder --mac --arm64 --dir -c apps/electron/electron-builder.yml && node tools/dev/macos-code-signing.mjs --app apps/electron/release/mac-arm64/MyAgentTool.app && node tools/dev/desktop-package-verify.mjs --platform darwin --arch arm64",

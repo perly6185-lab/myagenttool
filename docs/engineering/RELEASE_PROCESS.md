@@ -49,6 +49,12 @@ Required:
 - Local execution permission review.
 - Rollback or downgrade path.
 
+Desktop artifact targets, credential names, manual distribution authority, and
+platform rollback evidence are defined in
+[`DESKTOP_RELEASE_CONTRACT.md`](DESKTOP_RELEASE_CONTRACT.md). Passing its
+credential preflight does not authorize signing, notarization, upload, or
+publication.
+
 ### Protocol Release
 
 Changes shared schemas, invocation messages, events, or state transitions.
