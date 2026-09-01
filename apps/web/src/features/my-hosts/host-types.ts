@@ -233,6 +233,72 @@ export interface HostOperationsMetrics {
   };
 }
 
+export interface HostOperationsPilotSummary {
+  version: 1;
+  generatedAt: string;
+  participation: { total: number; active: number; completed: number };
+  experience: {
+    nextStepClear: { numerator: number; denominator: number; rate: number | null };
+    averageEaseRating: number | null;
+  };
+  operations: HostOperationsMetrics;
+  bottlenecks: Array<{ nextStep: HostOperationsCase["nextStep"] | "unknown"; count: number }>;
+  privacy: {
+    rawInputCollected: false;
+    commandOutputCollected: false;
+    addressCollected: false;
+    credentialsCollected: false;
+    freeTextCollected: false;
+    participantIdentityExported: false;
+  };
+}
+
+export interface HostOperationsPilotCampaign {
+  id: string;
+  label: string;
+  inviteCode: string;
+  status: "active" | "closed";
+  revision: number;
+  createdAt: string;
+  activatedAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+  summary: HostOperationsPilotSummary;
+}
+
+export interface HostOperationsPilotSession {
+  id: string;
+  campaignId: string;
+  sshTargetId: string;
+  status: "active" | "completed";
+  revision: number;
+  startedAt: string;
+  completedAt: string | null;
+  outcome: { caseId: string; nextStepClear: boolean; easeRating: number } | null;
+  latestCase: Pick<HostOperationsCase, "id" | "status" | "nextStep" | "updatedAt"> | null;
+}
+
+export interface HostOperationsPilotEvidence {
+  evidence: {
+    schema: "myagenttool.host-operations-pilot-evidence.v1";
+    generatedAt: string;
+    campaign: Pick<HostOperationsPilotCampaign, "id" | "label" | "status" | "activatedAt" | "closedAt">;
+    summary: HostOperationsPilotSummary;
+    samples: Array<{
+      caseRef: string;
+      hostRef: string;
+      intent: HostDiagnosticRunIntent;
+      status: HostOperationsCaseStatus;
+      nextStep: HostOperationsCase["nextStep"];
+      deviceChanged: boolean;
+      createdAt: string;
+      updatedAt: string;
+      timeline: Array<Pick<HostOperationsCaseTimelineItem, "kind" | "at" | "deviceChanged">>;
+    }>;
+  };
+  sha256: string;
+}
+
 export type HostRemediationPlanStatus = "planned" | "running" | "not_needed" | "completed" | "completed_unresolved" | "failed" | "outcome_unknown" | "expired";
 
 export interface HostWebsiteHealthSummary {

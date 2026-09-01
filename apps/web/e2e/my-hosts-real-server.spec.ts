@@ -2,9 +2,10 @@ import type { Server } from "node:http";
 import https from "node:https";
 import { createHash, generateKeyPairSync, X509Certificate } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "playwright/test";
 
 type Flow = "complete" | "safe_abort";
@@ -17,6 +18,7 @@ let httpsServer: Server | null = null;
 let runtime: { httpDependencies: { persistStateNow: () => unknown } } | null = null;
 let remoteFixtures: Awaited<ReturnType<typeof startRemoteFixtures>> | null = null;
 const previousCredentialToken = process.env.MYAGENT_DESKTOP_CREDENTIAL_TOKEN;
+const visualQaDir = join(fileURLToPath(new URL(".", import.meta.url)), "../../../docs/engineering/visual-qa/my-hosts-operations-pilot");
 
 test.describe.configure({ mode: "serial" });
 
@@ -272,6 +274,72 @@ test("real server records a safe abort without changing the host", async ({ page
   expect(metrics.ok()).toBe(true);
   const metricBody = await metrics.json() as { metrics: { cases: { total: number; unresolved: number; changed: number }; remediation: { total: number; safeAbort: number } } };
   expect(metricBody.metrics).toMatchObject({ cases: { total: 1, unresolved: 1, changed: 0 }, remediation: { total: 1, safeAbort: 1 } });
+});
+
+test("real server closes an explicitly consented operations pilot and exports anonymous evidence", async ({ page }) => {
+  await page.addInitScript(() => {
+    const experienceMode = sessionStorage.getItem("host-pilot-mode") === "professional" ? "professional" : "ordinary";
+    localStorage.setItem("myagenttool-ui", JSON.stringify({ state: { locale: "zh-CN", section: "myHosts", experienceMode }, version: 1 }));
+  });
+  await startServer("complete");
+  const created = await page.request.post(`${apiBase}/api/host-operations-pilot/campaigns`, { data: { label: "真实主机处置试用" } });
+  expect(created.ok()).toBe(true);
+  const campaign = (await created.json()).campaign as { id: string; inviteCode: string; revision: number };
+
+  await page.goto(`/?section=myHosts&hostPilot=${encodeURIComponent(campaign.inviteCode)}&api=${encodeURIComponent(apiBase)}`);
+  await expect(page.getByText("真实主机处置试用")).toBeVisible();
+  await expect(page.getByText(/不记录问题原话、设备地址、命令、输出、凭据或自由文本/)).toBeVisible();
+  await page.getByRole("button", { name: "同意并开始试用" }).click();
+  await expect(page.getByText("请使用设备助手描述并处理一个真实问题。")).toBeVisible();
+
+  await page.getByPlaceholder("例如：最近有谁登录过？").fill("网站打不开");
+  await page.getByRole("button", { name: "查看" }).click();
+  await page.getByRole("button", { name: "继续检查网站" }).click();
+  await page.getByTestId("host-remediation-offer").getByRole("button", { name: "检查网站", exact: true }).click();
+  await page.getByRole("button", { name: "确认并处理" }).click();
+  await expect(page.getByText("网站已经恢复访问")).toBeVisible();
+  await expect(page.getByText("处置已结束，请完成两项反馈")).toBeVisible({ timeout: 10_000 });
+  if (process.env.CAPTURE_VISUAL_QA === "true") {
+    mkdirSync(visualQaDir, { recursive: true });
+    await page.getByTestId("host-operations-pilot-participant").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(visualQaDir, "participant-feedback-1280w.png"), fullPage: true });
+  }
+  await page.getByRole("button", { name: "清楚", exact: true }).click();
+  await page.getByRole("combobox", { name: "整体容易程度" }).selectOption("5");
+  await page.getByRole("button", { name: "完成并提交" }).click();
+  await expect(page.getByText("本次处置试用已提交")).toBeVisible();
+
+  await runtime?.httpDependencies.persistStateNow();
+  await restartServer("complete");
+  await page.evaluate(() => sessionStorage.setItem("host-pilot-mode", "professional"));
+  await page.goto(`/?section=myHosts&api=${encodeURIComponent(apiBase)}`);
+  const workbench = page.getByTestId("host-operations-pilot-workbench");
+  await expect(workbench.getByText("处置试用闭环")).toBeVisible();
+  await expect(workbench.getByText("真实主机处置试用")).toBeVisible();
+  await expect(workbench.getByText("100%", { exact: true })).toBeVisible();
+  await expect(workbench.getByText("5/5", { exact: true })).toBeVisible();
+  if (process.env.CAPTURE_VISUAL_QA === "true") {
+    mkdirSync(visualQaDir, { recursive: true });
+    await workbench.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(visualQaDir, "professional-workbench-1280w.png"), fullPage: true });
+  }
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出匿名证据" }).click();
+  const download = await downloadPromise;
+  const downloadPath = await download.path();
+  expect(downloadPath).toBeTruthy();
+  const evidenceText = readFileSync(downloadPath!, "utf8");
+  const evidence = JSON.parse(evidenceText) as { sha256: string; evidence: { samples: Array<{ caseRef: string; hostRef: string }> } };
+  expect(evidence.sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(evidence.evidence.samples[0].caseRef).toMatch(/^case_[a-f0-9]{12}$/);
+  expect(evidence.evidence.samples[0].hostRef).toMatch(/^hst_[a-f0-9]{12}$/);
+  expect(evidenceText).not.toContain("ssh_target_real_e2e");
+  expect(evidenceText).not.toContain("网站打不开");
+  expect(evidenceText).not.toContain("test-password");
+
+  await page.getByRole("button", { name: "结束本轮" }).click();
+  await expect(page.getByText("本轮已结束，证据仍可导出")).toBeVisible();
 });
 
 function seedHostScenario(state: Record<string, any>, remote: Awaited<ReturnType<typeof startRemoteFixtures>>) {

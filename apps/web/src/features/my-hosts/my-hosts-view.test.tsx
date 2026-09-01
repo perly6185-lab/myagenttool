@@ -6,12 +6,12 @@ import { i18n } from "@/lib/i18n";
 import { ApiError } from "@/lib/api/request";
 import { useUiStore } from "@/store/ui-store";
 import { hostApi } from "./host-api";
-import type { HostFileScope, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostFileScope, HostOperationsPilotCampaign, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
 import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
   list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
-  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), operationCases: vi.fn(), diagnoseCase: vi.fn(), planRemediation: vi.fn(), confirmRemediation: vi.fn(), remediationPlans: vi.fn(), remediationPlan: vi.fn(), recheckRemediation: vi.fn(), health: vi.fn(), checkHealth: vi.fn(), setHealthMonitoring: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
+  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), operationCases: vi.fn(), operationMetrics: vi.fn(), diagnoseCase: vi.fn(), planRemediation: vi.fn(), confirmRemediation: vi.fn(), remediationPlans: vi.fn(), remediationPlan: vi.fn(), recheckRemediation: vi.fn(), health: vi.fn(), checkHealth: vi.fn(), setHealthMonitoring: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(), operationsPilotCampaigns: vi.fn(), createOperationsPilotCampaign: vi.fn(), closeOperationsPilotCampaign: vi.fn(), activeOperationsPilotSession: vi.fn(), startOperationsPilotSession: vi.fn(), completeOperationsPilotSession: vi.fn(), withdrawOperationsPilotSession: vi.fn(), operationsPilotEvidence: vi.fn(),
 } }));
 
 const host: SshHost = {
@@ -37,6 +37,19 @@ const remediationPlan: HostRemediationPlan = {
   revision: 1, createdAt: "2026-08-29T00:00:00.000Z", expiresAt: "2026-08-29T00:10:00.000Z", result: null,
 };
 
+const pilotCampaign: HostOperationsPilotCampaign = {
+  id: "hopc_1", label: "September operations pilot", inviteCode: "pilot-code", status: "active", revision: 1,
+  createdAt: "2026-09-01T00:00:00.000Z", activatedAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:05:00.000Z", closedAt: null,
+  summary: {
+    version: 1, generatedAt: "2026-09-01T00:05:00.000Z",
+    participation: { total: 2, active: 1, completed: 1 },
+    experience: { nextStepClear: { numerator: 1, denominator: 1, rate: 1 }, averageEaseRating: 4 },
+    operations: { version: 1, generatedAt: "2026-09-01T00:05:00.000Z", cases: { total: 2, active: 1, terminal: 1, recovered: 1, unresolved: 0, changed: 1, manualHandoff: 0, recoveryRate: 1, changeRate: 0.5 }, remediation: { total: 1, terminal: 1, safeAbort: 0, unknownOutcome: 0, completed: 1, noChangeNeeded: 0 }, timing: { completedCaseCount: 1, averageCaseSeconds: 90, latestCaseUpdatedAt: "2026-09-01T00:04:00.000Z" } },
+    bottlenecks: [{ nextStep: "check_managed_website", count: 1 }],
+    privacy: { rawInputCollected: false, commandOutputCollected: false, addressCollected: false, credentialsCollected: false, freeTextCollected: false, participantIdentityExported: false },
+  },
+};
+
 function renderView() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={client}><MyHostsView /></QueryClientProvider>);
@@ -44,6 +57,7 @@ function renderView() {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  window.history.replaceState({}, "", "/?section=myHosts");
   delete window.myagenttoolDesktop;
   await i18n.changeLanguage("en-US");
   useUiStore.setState({ experienceMode: "professional" });
@@ -60,6 +74,9 @@ beforeEach(async () => {
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
   vi.mocked(hostApi.remediationPlans).mockResolvedValue({ plans: [], count: 0 });
   vi.mocked(hostApi.operationCases).mockResolvedValue({ cases: [], count: 0, activeCase: null });
+  vi.mocked(hostApi.operationMetrics).mockResolvedValue({ metrics: { version: 1, generatedAt: "2026-09-01T00:00:00.000Z", cases: { total: 0, active: 0, terminal: 0, recovered: 0, unresolved: 0, changed: 0, manualHandoff: 0, recoveryRate: null, changeRate: null }, remediation: { total: 0, terminal: 0, safeAbort: 0, unknownOutcome: 0, completed: 0, noChangeNeeded: 0 }, timing: { completedCaseCount: 0, averageCaseSeconds: null, latestCaseUpdatedAt: null } } });
+  vi.mocked(hostApi.operationsPilotCampaigns).mockResolvedValue({ campaigns: [], count: 0 });
+  vi.mocked(hostApi.activeOperationsPilotSession).mockResolvedValue({ campaign: null, session: null });
   vi.mocked(hostApi.remediationPlan).mockResolvedValue({ plan: remediationPlan });
   vi.mocked(hostApi.health).mockResolvedValue({
     policy: { enabled: false, cadence: "daily", nextRunAt: null, lastRunAt: null, lastRunStatus: null, revision: 0 },
@@ -129,6 +146,42 @@ it("keeps complete connection metadata and settings available in Professional mo
   expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
   expect(screen.getByText("File ranges")).toBeTruthy();
   expect(screen.getByText("Governed transfers")).toBeTruthy();
+});
+
+it("shows the professional operations pilot loop with invitation, bottleneck, and evidence actions", async () => {
+  vi.mocked(hostApi.operationsPilotCampaigns).mockResolvedValue({ campaigns: [pilotCampaign], count: 1 });
+  renderView();
+
+  expect(await screen.findByText("Operations pilot loop")).toBeTruthy();
+  expect(screen.getByText("September operations pilot")).toBeTruthy();
+  expect(screen.getByText("100%")).toBeTruthy();
+  expect(screen.getByText("4/5")).toBeTruthy();
+  expect(screen.getByText(/check the real website/i)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy trial link" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Export evidence" })).toBeTruthy();
+  expect(screen.getByText(/does not block releases/i)).toBeTruthy();
+});
+
+it("collects explicit participant consent and structured feedback after a terminal operations case", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  window.history.replaceState({}, "", "/?section=myHosts&hostPilot=pilot-code");
+  const session = {
+    id: "hops_1", campaignId: pilotCampaign.id, sshTargetId: host.id, status: "active" as const, revision: 1,
+    startedAt: "2026-09-01T00:01:00.000Z", completedAt: null, outcome: null,
+    latestCase: { id: "hoc_1", status: "recovered" as const, nextStep: "case_complete" as const, updatedAt: "2026-09-01T00:04:00.000Z" },
+  };
+  vi.mocked(hostApi.activeOperationsPilotSession).mockResolvedValue({ campaign: { id: pilotCampaign.id, label: pilotCampaign.label, status: "active" }, session });
+  vi.mocked(hostApi.completeOperationsPilotSession).mockResolvedValue({ session: { ...session, status: "completed", revision: 2, completedAt: "2026-09-01T00:05:00.000Z", outcome: { caseId: "hoc_1", nextStepClear: true, easeRating: 4 } } });
+  renderView();
+
+  expect(await screen.findByText("The operation ended. Complete two feedback items")).toBeTruthy();
+  expect(screen.getByText(/does not record the raw issue, device address, command, output, or credential/i)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+  fireEvent.change(screen.getByLabelText("Overall ease"), { target: { value: "5" } });
+  fireEvent.click(screen.getByRole("button", { name: "Complete and submit" }));
+  await waitFor(() => expect(hostApi.completeOperationsPilotSession).toHaveBeenCalledWith("hops_1", {
+    expectedRevision: 1, caseId: "hoc_1", nextStepClear: true, easeRating: 5,
+  }));
 });
 
 it("gives ordinary users one clear health check and opt-in daily care without technical output", async () => {

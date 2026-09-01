@@ -1,5 +1,5 @@
 import { ApiError, apiBase, csrfHeaders, ensureSession, request } from "@/lib/api/request";
-import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostDiagnosticRun, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResponse, HostFileTransfer, HostHealthOverview, HostHealthPolicy, HostHealthSnapshot, HostOperationsCase, HostOperationsMetrics, HostPurpose, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostDiagnosticRun, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResponse, HostFileTransfer, HostHealthOverview, HostHealthPolicy, HostHealthSnapshot, HostOperationsCase, HostOperationsMetrics, HostOperationsPilotCampaign, HostOperationsPilotEvidence, HostOperationsPilotSession, HostPurpose, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
 
 export const MAX_HOST_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -27,6 +27,25 @@ export const hostApi = {
     request<{ cases: HostOperationsCase[]; count: number; activeCase: HostOperationsCase | null }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/assistant/cases`),
   operationMetrics: (hostId: string) =>
     request<{ metrics: HostOperationsMetrics }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/assistant/metrics`),
+  operationsPilotCampaigns: () =>
+    request<{ campaigns: HostOperationsPilotCampaign[]; count: number }>("GET", "/api/host-operations-pilot/campaigns"),
+  createOperationsPilotCampaign: (label?: string) =>
+    request<{ campaign: HostOperationsPilotCampaign }>("POST", "/api/host-operations-pilot/campaigns", { label }),
+  closeOperationsPilotCampaign: (campaignId: string, expectedRevision: number) =>
+    request<{ campaign: HostOperationsPilotCampaign }>("PATCH", `/api/host-operations-pilot/campaigns/${encodeURIComponent(campaignId)}`, { action: "close", expectedRevision }),
+  activeOperationsPilotSession: (hostId: string, inviteCode?: string) => {
+    const query = new URLSearchParams({ hostId });
+    if (inviteCode) query.set("code", inviteCode);
+    return request<{ campaign: Pick<HostOperationsPilotCampaign, "id" | "label" | "status"> | null; session: HostOperationsPilotSession | null }>("GET", `/api/host-operations-pilot/sessions/active?${query}`);
+  },
+  startOperationsPilotSession: (hostId: string, inviteCode: string) =>
+    request<{ session: HostOperationsPilotSession }>("POST", "/api/host-operations-pilot/sessions", { sshTargetId: hostId, inviteCode, consent: true }),
+  completeOperationsPilotSession: (sessionId: string, input: { expectedRevision: number; caseId: string; nextStepClear: boolean; easeRating: number }) =>
+    request<{ session: HostOperationsPilotSession }>("PATCH", `/api/host-operations-pilot/sessions/${encodeURIComponent(sessionId)}`, input),
+  withdrawOperationsPilotSession: (sessionId: string) =>
+    request<{ deleted: true; sessionId: string }>("DELETE", `/api/host-operations-pilot/sessions/${encodeURIComponent(sessionId)}`),
+  operationsPilotEvidence: (campaignId: string) =>
+    request<HostOperationsPilotEvidence>("GET", `/api/host-operations-pilot/campaigns/${encodeURIComponent(campaignId)}/evidence`),
   diagnoseCase: (hostId: string, input?: string, incidentId?: string | null, caseId?: string | null) =>
     request<{ case: HostOperationsCase; run: HostDiagnosticRun | null; reused: boolean }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/cases`, { ...(input?.trim() ? { input: input.trim() } : {}), incidentId: incidentId ?? null, caseId: caseId ?? null }, true, 180_000),
   planRemediation: (hostId: string, profileId: string, diagnosticRunId: string) =>

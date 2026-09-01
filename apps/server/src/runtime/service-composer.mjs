@@ -216,6 +216,7 @@ import { createHostRemediationService } from "../services/host-remediation.mjs";
 import { createPinnedWebsiteHealthChecker } from "../services/host-website-health.mjs";
 import { createHostHealthMonitorService } from "../services/host-health-monitor.mjs";
 import { createHostOperationsCaseService } from "../services/host-operations-cases.mjs";
+import { createHostOperationsPilotService } from "../services/host-operations-pilot.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
 import { createSiteCredentialVault } from "../services/site-credential-vault.mjs";
@@ -1339,6 +1340,13 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
     runSshHostDiagnosticRun,
+    store,
+  });
+  const hostOperationsPilotService = createHostOperationsPilotService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
     store,
   });
 
@@ -8242,6 +8250,14 @@ export function createServerRuntimeServices({
     findHostOperationsCase: hostOperationsCaseService.findCase,
     listHostOperationsCases: hostOperationsCaseService.listCases,
     syncHostOperationsCaseRemediation: hostOperationsCaseService.syncRemediation,
+    listHostOperationsPilotCampaigns: hostOperationsPilotService.listCampaigns,
+    createHostOperationsPilotCampaign: hostOperationsPilotService.createCampaign,
+    updateHostOperationsPilotCampaign: hostOperationsPilotService.updateCampaign,
+    getActiveHostOperationsPilotSession: hostOperationsPilotService.activeSession,
+    startHostOperationsPilotSession: hostOperationsPilotService.startSession,
+    completeHostOperationsPilotSession: hostOperationsPilotService.completeSession,
+    deleteHostOperationsPilotSession: hostOperationsPilotService.deleteSession,
+    getHostOperationsPilotEvidence: hostOperationsPilotService.getEvidence,
     createManagedTerminalSession,
     queueTerminalBridgeAction,
     nextTerminalBridgeAction,

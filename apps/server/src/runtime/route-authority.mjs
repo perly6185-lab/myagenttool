@@ -41,6 +41,7 @@ const manageRules = [
   /^\/api\/sites\/[^/]+\/deployment-target(?:\/verify)?$/,
   /^\/api\/sites\/[^/]+\/domain-tls-binding(?:\/deployment)?$/,
   /^\/api\/site-pilot\/campaigns(?:\/[^/]+(?:\/invitations)?)?$/,
+  /^\/api\/host-operations-pilot\/campaigns(?:\/[^/]+)?$/,
 ];
 
 const operateRules = [

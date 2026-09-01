@@ -240,6 +240,8 @@ export const persistedArrayKeys = [
   "hostTlsActivationProfiles",
   "hostDiagnosticRuns",
   "hostOperationsCases",
+  "hostOperationsPilotCampaigns",
+  "hostOperationsPilotSessions",
   "hostRemediationPlans",
   "hostHealthPolicies",
   "hostHealthSnapshots",
