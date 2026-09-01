@@ -54,6 +54,8 @@ test("configuration and governance writes require professional management", () =
     ["PATCH", "/api/site-pilot/campaigns/campaign-1"],
     ["DELETE", "/api/site-pilot/campaigns/campaign-1"],
     ["POST", "/api/site-pilot/campaigns/campaign-1/invitations"],
+    ["POST", "/api/host-operations-pilot/campaigns"],
+    ["PATCH", "/api/host-operations-pilot/campaigns/campaign-1"],
   ];
 
   for (const [method, pathname] of cases) {

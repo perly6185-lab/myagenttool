@@ -39,6 +39,7 @@ import { handleChannelObjectRoutes } from "../routes/channel-objects.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
 import { handleSiteRoutes } from "../routes/sites.mjs";
 import { handleSitePilotRoutes } from "../routes/site-pilot.mjs";
+import { handleHostOperationsPilotRoutes } from "../routes/host-operations-pilot.mjs";
 import { handleSiteCredentialRoutes } from "../routes/site-credentials.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
 import { handlePrivateTutorRoutes } from "../routes/private-tutor.mjs";
@@ -674,6 +675,14 @@ export function createHttpServer({
   deleteSitePilotCampaign,
   createSitePilotInvitation,
   resolveSitePilotWorkspace,
+  listHostOperationsPilotCampaigns,
+  createHostOperationsPilotCampaign,
+  updateHostOperationsPilotCampaign,
+  getActiveHostOperationsPilotSession,
+  startHostOperationsPilotSession,
+  completeHostOperationsPilotSession,
+  deleteHostOperationsPilotSession,
+  getHostOperationsPilotEvidence,
   registerChannel,
   listChannels,
   listChannelInteractions,
@@ -1403,6 +1412,20 @@ export function createHttpServer({
         updateSitePilotCampaign,
         deleteSitePilotCampaign,
         createSitePilotInvitation,
+      })) {
+        return;
+      }
+
+      if (await handleHostOperationsPilotRoutes({
+        req, res, url, sendJson, readJson, actor,
+        listHostOperationsPilotCampaigns,
+        createHostOperationsPilotCampaign,
+        updateHostOperationsPilotCampaign,
+        getActiveHostOperationsPilotSession,
+        startHostOperationsPilotSession,
+        completeHostOperationsPilotSession,
+        deleteHostOperationsPilotSession,
+        getHostOperationsPilotEvidence,
       })) {
         return;
       }

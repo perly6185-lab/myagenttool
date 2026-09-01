@@ -363,6 +363,10 @@ export function createServerState({ defaultProjectPath, now }) {
     // Persistent ordinary-user operations cases link incidents, structured
     // intent, diagnostic summaries, and governed outcomes without raw input.
     hostOperationsCases: [],
+    // Explicitly consented host-operations pilot rounds and participant
+    // sessions. They retain only ownership links and structured outcomes.
+    hostOperationsPilotCampaigns: [],
+    hostOperationsPilotSessions: [],
     // Short-lived, revision-bound fixed remediation plans and their structured
     // outcomes. Commands, remote output, addresses, and credentials stay out.
     hostRemediationPlans: [],

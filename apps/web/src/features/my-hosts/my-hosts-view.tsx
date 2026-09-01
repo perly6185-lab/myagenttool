@@ -226,7 +226,8 @@ function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host
     {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div className="min-w-0 flex-1"><p className="text-sm font-medium">{recovery.title}</p><p className="mt-1 text-xs text-muted-foreground">{recovery.detail}</p></div><Button onClick={() => onContinue(recovery.allowPrivate ? { allowPrivate: true } : undefined)}>{recovery.action}<ChevronRight /></Button></div> : null}
     {professional && host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
     {professional ? <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} onInvestigate={investigate} /> : null}
-    {professional ? <HostOperationsMetricsPanel hostId={host.id} zh={zh} /> : null}
+    {professional ? <HostOperationsMetricsPanel hostId={host.id} zh={zh} /> : <HostOperationsPilotParticipant hostId={host.id} zh={zh} />}
+    {professional ? <HostOperationsPilotWorkbench zh={zh} /> : null}
     <HostAssistant host={host} zh={zh} professional={professional} onRepairCredential={onContinue} request={assistantRequest} />
     {!professional ? <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} onInvestigate={investigate} /> : null}
   </div>;
@@ -246,6 +247,96 @@ function HostOperationsMetricsPanel({ hostId, zh }: { hostId: string; zh: boolea
 
 function MetricValue({ label, value }: { label: string; value: string }) {
   return <div className="rounded-md bg-muted p-2"><span className="block text-[11px] text-muted-foreground">{label}</span><strong className="mt-1 block text-sm">{value}</strong></div>;
+}
+
+function HostOperationsPilotParticipant({ hostId, zh }: { hostId: string; zh: boolean }) {
+  const queryClient = useQueryClient();
+  const inviteCode = typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("hostPilot")?.trim() ?? "";
+  const pilot = useQuery({
+    queryKey: ["host-operations-pilot-session", hostId, inviteCode],
+    queryFn: () => hostApi.activeOperationsPilotSession(hostId, inviteCode),
+    refetchInterval: (query) => query.state.data?.session?.status === "active" ? 3_000 : false,
+  });
+  const [nextStepClear, setNextStepClear] = useState<boolean | null>(null);
+  const [easeRating, setEaseRating] = useState(4);
+  const start = useMutation({
+    mutationFn: () => hostApi.startOperationsPilotSession(hostId, inviteCode),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["host-operations-pilot-session", hostId] }),
+  });
+  const complete = useMutation({
+    mutationFn: () => hostApi.completeOperationsPilotSession(pilot.data!.session!.id, {
+      expectedRevision: pilot.data!.session!.revision,
+      caseId: pilot.data!.session!.latestCase!.id,
+      nextStepClear: nextStepClear!,
+      easeRating,
+    }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["host-operations-pilot-session", hostId] });
+      void queryClient.invalidateQueries({ queryKey: ["host-operations-pilot-campaigns"] });
+    },
+  });
+  const withdraw = useMutation({
+    mutationFn: () => hostApi.withdrawOperationsPilotSession(pilot.data!.session!.id),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["host-operations-pilot-session", hostId] }),
+  });
+  const campaign = pilot.data?.campaign ?? null;
+  const session = pilot.data?.session ?? null;
+  if (pilot.isLoading || (!campaign && !session)) return null;
+  const terminal = session?.latestCase && ["recovered", "unresolved", "needs_help"].includes(session.latestCase.status);
+  if (session?.status === "completed") return <div className="rounded-lg border border-primary/25 bg-primary/[0.04] p-4" data-testid="host-operations-pilot-participant"><div className="flex items-center gap-2"><CheckCircle2 className="size-5 text-primary" /><p className="text-sm font-medium">{zh ? "本次处置试用已提交" : "Operations trial submitted"}</p></div><p className="mt-2 text-xs text-muted-foreground">{zh ? "只记录结构化步骤和选择结果；未记录问题原话、设备地址、命令、输出或凭据。" : "Only structured steps and selections were recorded. No raw issue, address, command, output, or credential was collected."}</p></div>;
+  return <div className="rounded-lg border border-primary/25 bg-primary/[0.04] p-4" data-testid="host-operations-pilot-participant">
+    <div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Sparkles className="size-5" /></span><div><p className="text-sm font-medium">{campaign?.label ?? (zh ? "处置体验试用" : "Operations experience trial")}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "帮助验证“发生了什么、现在在哪里、下一步做什么”是否足够清楚。" : "Help validate whether what happened, current state, and the next step are clear."}</p></div></div>
+    {session ? <p className="mt-3 text-xs text-muted-foreground">{zh ? "本次不记录问题原话、设备地址、命令、输出或凭据。" : "This trial does not record the raw issue, device address, command, output, or credential."}</p> : null}
+    {!session ? <><p className="mt-3 rounded-md bg-muted p-3 text-xs">{zh ? "同意后，只会记录本次处置的结构化阶段、结果和你的选择题反馈；不记录问题原话、设备地址、命令、输出、凭据或自由文本。你可以随时撤回并删除本次记录。" : "With consent, only structured stages, outcomes, and multiple-choice feedback are recorded. Raw issues, addresses, commands, output, credentials, and free text are not collected. You can withdraw and delete the record at any time."}</p><Button className="mt-3" disabled={!inviteCode || start.isPending || campaign?.status !== "active"} onClick={() => start.mutate()}>{start.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "同意并开始试用" : "Consent and start trial"}</Button></> : <>
+      <div className="mt-3 rounded-md bg-muted p-3 text-xs"><span className="text-muted-foreground">{zh ? "当前进度" : "Current progress"}</span><p className="mt-1 font-medium">{session.latestCase ? operationCaseNextStepCopy(session.latestCase.nextStep, zh) : (zh ? "请使用设备助手描述并处理一个真实问题。" : "Use the device assistant to describe and handle a real issue.")}</p></div>
+      {terminal ? <div className="mt-3 space-y-3 rounded-md border bg-card p-3"><p className="text-sm font-medium">{zh ? "处置已结束，请完成两项反馈" : "The operation ended. Complete two feedback items"}</p><fieldset><legend className="text-xs text-muted-foreground">{zh ? "你是否始终清楚唯一下一步？" : "Was the single next step clear throughout?"}</legend><div className="mt-2 flex gap-2"><Button size="sm" variant={nextStepClear === true ? "primary" : "secondary"} onClick={() => setNextStepClear(true)}>{zh ? "清楚" : "Clear"}</Button><Button size="sm" variant={nextStepClear === false ? "primary" : "secondary"} onClick={() => setNextStepClear(false)}>{zh ? "不清楚" : "Unclear"}</Button></div></fieldset><label className="block text-xs text-muted-foreground">{zh ? "整体容易程度（1 很难，5 很容易）" : "Overall ease (1 difficult, 5 easy)"}<Select className="mt-2 max-w-40" aria-label={zh ? "整体容易程度" : "Overall ease"} value={String(easeRating)} onChange={(event) => setEaseRating(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}</Select></label><Button disabled={nextStepClear == null || complete.isPending} onClick={() => complete.mutate()}>{complete.isPending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}{zh ? "完成并提交" : "Complete and submit"}</Button></div> : null}
+      <div className="mt-3 flex justify-end"><Button size="sm" variant="ghost" disabled={withdraw.isPending} onClick={() => withdraw.mutate()}>{zh ? "撤回并删除本次记录" : "Withdraw and delete this record"}</Button></div>
+    </>}
+    {start.error || complete.error || withdraw.error ? <p role="alert" className="mt-3 text-xs text-destructive">{zh ? "试用记录暂时无法更新，设备操作不受影响。" : "The trial record could not be updated. Device operations are unaffected."}</p> : null}
+  </div>;
+}
+
+function HostOperationsPilotWorkbench({ zh }: { zh: boolean }) {
+  const queryClient = useQueryClient();
+  const campaigns = useQuery({ queryKey: ["host-operations-pilot-campaigns"], queryFn: hostApi.operationsPilotCampaigns });
+  const current = campaigns.data?.campaigns[0] ?? null;
+  const create = useMutation({
+    mutationFn: () => hostApi.createOperationsPilotCampaign(zh ? `主机处置试用 ${new Date().toISOString().slice(0, 10)}` : `Host operations pilot ${new Date().toISOString().slice(0, 10)}`),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["host-operations-pilot-campaigns"] }),
+  });
+  const close = useMutation({
+    mutationFn: () => hostApi.closeOperationsPilotCampaign(current!.id, current!.revision),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["host-operations-pilot-campaigns"] }),
+  });
+  const [exportHash, setExportHash] = useState<string | null>(null);
+  const evidence = useMutation({
+    mutationFn: () => hostApi.operationsPilotEvidence(current!.id),
+    onSuccess: (result) => {
+      setExportHash(result.sha256);
+      const blob = new Blob([`${JSON.stringify(result, null, 2)}\n`], { type: "application/json" });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = `host-operations-pilot-${current!.id}.json`;
+      link.click();
+      URL.revokeObjectURL(href);
+    },
+  });
+  const share = current && typeof window !== "undefined" ? (() => { const url = new URL(window.location.href); url.searchParams.set("section", "myHosts"); url.searchParams.set("hostPilot", current.inviteCode); return url.toString(); })() : "";
+  const copyShare = async () => { if (share) await navigator.clipboard?.writeText(share); };
+  const percent = (rate: number | null) => rate == null ? "—" : `${Math.round(rate * 100)}%`;
+  return <div className="rounded-lg border bg-card p-4" data-testid="host-operations-pilot-workbench">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><BarChart3 className="size-5" /></span><div><p className="text-sm font-medium">{zh ? "处置试用闭环" : "Operations pilot loop"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "邀请体验、观察卡点并导出匿名证据；当前不参与发布阻断。" : "Invite trials, observe bottlenecks, and export anonymous evidence. This does not block releases."}</p></div></div>{!current || current.status === "closed" ? <Button size="sm" disabled={create.isPending} onClick={() => create.mutate()}>{create.isPending ? <Loader2 className="animate-spin" /> : <Plus />}{zh ? "开始新一轮" : "Start new round"}</Button> : null}</div>
+    {campaigns.isLoading ? <p className="mt-3 text-xs text-muted-foreground">{zh ? "正在读取试用批次…" : "Loading pilot rounds…"}</p> : null}
+    {current ? <><div className="mt-3 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-medium">{current.label}</p><p className="mt-1 text-xs text-muted-foreground">{current.status === "active" ? (zh ? "正在收集真实处置体验" : "Collecting real operations experience") : (zh ? "本轮已结束，证据仍可导出" : "Round closed; evidence remains exportable")}</p></div><div className="flex gap-2">{current.status === "active" ? <Button size="sm" variant="secondary" disabled={close.isPending} onClick={() => close.mutate()}>{zh ? "结束本轮" : "Close round"}</Button> : null}<Button size="sm" variant="secondary" disabled={evidence.isPending} onClick={() => evidence.mutate()}><ArrowDownToLine />{zh ? "导出匿名证据" : "Export evidence"}</Button></div></div>
+      {current.status === "active" ? <div className="mt-3 flex items-center gap-2 rounded-md bg-muted p-3"><code className="min-w-0 flex-1 truncate text-xs">{share}</code><Button size="sm" variant="ghost" aria-label={zh ? "复制试用链接" : "Copy trial link"} onClick={() => void copyShare()}><Copy /></Button></div> : null}
+      <div className="mt-3 grid gap-2 sm:grid-cols-4"><MetricValue label={zh ? "已同意参与" : "Consented"} value={String(current.summary.participation.total)} /><MetricValue label={zh ? "已完成" : "Completed"} value={String(current.summary.participation.completed)} /><MetricValue label={zh ? "下一步清楚" : "Next step clear"} value={percent(current.summary.experience.nextStepClear.rate)} /><MetricValue label={zh ? "容易程度" : "Ease rating"} value={current.summary.experience.averageEaseRating == null ? "—" : `${current.summary.experience.averageEaseRating}/5`} /></div>
+      <p className="mt-3 text-xs text-muted-foreground">{zh ? `恢复 ${current.summary.operations.cases.recovered} · 安全中止 ${current.summary.operations.remediation.safeAbort} · 人工接管 ${current.summary.operations.cases.manualHandoff} · 未知结果 ${current.summary.operations.remediation.unknownOutcome}` : `${current.summary.operations.cases.recovered} recovered · ${current.summary.operations.remediation.safeAbort} safe aborts · ${current.summary.operations.cases.manualHandoff} handoffs · ${current.summary.operations.remediation.unknownOutcome} unknown outcomes`}</p>
+      {current.summary.bottlenecks.length ? <div className="mt-3 rounded-md border p-3"><p className="text-xs font-medium">{zh ? "当前卡点" : "Current bottlenecks"}</p><div className="mt-2 space-y-1">{current.summary.bottlenecks.map((item) => <p key={item.nextStep} className="flex justify-between gap-3 text-xs"><span>{operationCaseNextStepCopy(item.nextStep, zh)}</span><strong>{item.count}</strong></p>)}</div></div> : <p className="mt-3 rounded-md bg-primary/[0.05] p-3 text-xs">{zh ? "当前没有处置单卡在中间阶段。" : "No operation case is currently stuck between stages."}</p>}
+      {exportHash ? <p className="mt-3 break-all text-[11px] text-muted-foreground">SHA-256: {exportHash}</p> : null}
+    </> : !campaigns.isLoading ? <p className="mt-3 rounded-md bg-muted p-3 text-xs text-muted-foreground">{zh ? "尚未开始试用批次。创建后会得到匿名邀请链接。" : "No pilot round yet. Starting one creates an anonymous invitation link."}</p> : null}
+    {campaigns.error || create.error || close.error || evidence.error ? <p role="alert" className="mt-3 text-xs text-destructive">{zh ? "试用工作台暂时无法完成这项操作。" : "The pilot workbench could not complete this operation."}</p> : null}
+  </div>;
 }
 
 function hostRecovery(host: SshHost, zh: boolean, professional: boolean) {
@@ -537,6 +628,11 @@ const CASE_NEXT_COPY: Record<HostOperationsCase["nextStep"], readonly [string, s
   recheck_outcome: ["结果还不能确认，下一步只重新检查，不重复执行处理。", "The outcome is not confirmed. Recheck only; do not repeat the action."],
   review_manual_handoff: ["现有安全能力无法继续，请查看可交接说明；不会尝试任意命令。", "The available safe actions cannot continue. Review the handoff guidance; no arbitrary command will be attempted."],
 };
+
+function operationCaseNextStepCopy(nextStep: HostOperationsCase["nextStep"] | "unknown", zh: boolean) {
+  if (nextStep === "unknown") return zh ? "阶段暂时未知" : "Stage currently unknown";
+  return CASE_NEXT_COPY[nextStep][zh ? 0 : 1];
+}
 
 const CASE_TIMELINE_COPY: Record<HostOperationsCase["timeline"][number]["kind"], readonly [string, string]> = {
   case_opened: ["已开始处理这件事", "Started this issue"],
