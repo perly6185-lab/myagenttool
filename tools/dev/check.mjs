@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const required = ["run-local-demo.mjs", "restart-changed-services.mjs", "local-smoke.mjs", "terminal-smoke.mjs", "ssh-target-smoke.mjs", "m0-acceptance.mjs", "visual-qa.mjs", "prototype-qa.mjs", "canvas-contract-qa.mjs", "import-ascii-prototype.mjs", "export-prototype-canvas.mjs", "terminal-join-contract-qa.mjs"];
+const required = ["run-local-demo.mjs", "restart-changed-services.mjs", "local-smoke.mjs", "terminal-smoke.mjs", "ssh-target-smoke.mjs", "m0-acceptance.mjs", "visual-qa.mjs", "visual-qa-contract.mjs", "prototype-qa.mjs", "canvas-contract-qa.mjs", "import-ascii-prototype.mjs", "export-prototype-canvas.mjs", "terminal-join-contract-qa.mjs"];
 const missing = required.filter((path) => !existsSync(new URL(path, import.meta.url)));
 
 if (missing.length > 0) {
