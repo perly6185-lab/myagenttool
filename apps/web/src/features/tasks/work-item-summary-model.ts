@@ -237,7 +237,7 @@ export function reviewIntentConfirmationCopy({
       return {
         actionLabel: zh ? "审核通过并应用到本地" : "Approve and apply locally",
         dialogTitle: zh ? "确认审核通过并应用到本地？" : "Approve and apply this delivery locally?",
-        dialogDescription: zh ? "系统会把已审核改动应用到本地基础分支并完成任务；不会推送或合并远端分支。" : "The reviewed changes will be applied to the local base branch and the task completed. No remote branch is pushed or merged.",
+        dialogDescription: zh ? "系统会把已审核改动应用到本地基础分支并完成任务；不会推送或合并远端分支。" : "The reviewed changes will be applied to the local base branch and the task completed. No remote branch will be pushed or merged.",
         dialogConfirm: zh ? "确认应用到本地" : "Apply locally",
         effect: zh ? "把本次已审核变更写入本地基础分支并完成任务；不会关闭外部 Issue。" : "Apply the reviewed changes to the local base branch and complete the task; external issues remain open.",
         risk: zh ? "中等：会实际修改本地项目代码，请确认结果符合预期。" : "Medium: this changes local project code; confirm that the result matches expectations.",

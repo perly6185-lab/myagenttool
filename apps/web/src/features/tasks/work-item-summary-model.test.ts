@@ -284,4 +284,33 @@ describe("work item intent summary", () => {
     expect(confirmation.effect).toContain("不会写入基础分支");
     expect(confirmation.dialogDescription).not.toContain("推送全部代码");
   });
+
+  it("preserves the local-apply remote safety promise in frozen confirmation copy", () => {
+    const reviewIntent = projectWorkItemReviewIntent({
+      intentContract: readOnlyReviewFixture.frozenIntent as unknown as WorkItemIntentContract,
+      deliveryEvidence: readOnlyReviewFixture.deliveryEvidence,
+    });
+    const localApplyIntent = {
+      ...reviewIntent,
+      confirmation: {
+        ...reviewIntent.confirmation,
+        effectCode: "apply_local_changes" as const,
+      },
+    };
+
+    const confirmation = reviewIntentConfirmationCopy({
+      reviewIntent: localApplyIntent,
+      language: "en",
+      fallback: {
+        actionLabel: "fallback",
+        dialogTitle: "fallback",
+        dialogDescription: "fallback",
+        dialogConfirm: "fallback",
+        effect: "fallback",
+        risk: "fallback",
+      },
+    });
+
+    expect(confirmation.dialogDescription).toContain("No remote branch will be pushed or merged");
+  });
 });
