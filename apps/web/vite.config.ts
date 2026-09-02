@@ -1,7 +1,23 @@
 import { fileURLToPath, URL } from "node:url";
+import { spawnSync } from "node:child_process";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
+
+function sourceMetadata() {
+  const commitResult = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
+  const statusResult = spawnSync("git", ["status", "--porcelain"], { encoding: "utf8" });
+  const environmentCommit = process.env.GITHUB_SHA?.trim().toLowerCase() ?? "";
+  const commit = /^[a-f0-9]{40}$/.test(environmentCommit)
+    ? environmentCommit
+    : commitResult.status === 0 && /^[a-f0-9]{40}$/.test(commitResult.stdout.trim().toLowerCase())
+      ? commitResult.stdout.trim().toLowerCase()
+      : "unavailable";
+  const state = statusResult.status === 0 ? (statusResult.stdout.trim() ? "dirty" : "clean") : "unknown";
+  return { commit, state };
+}
+
+const source = sourceMetadata();
 
 // The web console is served two ways: `vite` dev server for HMR, and the
 // Node static server (src/index.mjs) over the built `dist/` for the M0 demo.
@@ -13,7 +29,7 @@ export default defineConfig({
       name: "app-version",
       transformIndexHtml(html) {
         const version = process.env.GITHUB_SHA?.slice(0, 12) ?? process.env.npm_package_version ?? "dev";
-        return html.replace("<html", `<html data-app-version="${version}"`);
+        return html.replace("<html", `<html data-app-version="${version}" data-source-commit="${source.commit}" data-source-state="${source.state}" data-acceptance-surface-version="risk-reminder-ui-v1"`);
       },
     },
   ],

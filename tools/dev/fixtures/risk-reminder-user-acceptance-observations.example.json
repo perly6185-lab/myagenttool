@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "risk-reminder-user-acceptance",
+  "datasetVersion": "1.0.0",
+  "datasetDigest": "302c85cd3f0ebd21a417509175e151b46b6418fd1adbaa5f8be3901adb372860",
+  "surface": {
+    "version": "risk-reminder-ui-v1",
+    "productCommit": "REPLACE_WITH_CLEAN_CANDIDATE_COMMIT",
+    "sourceState": "clean",
+    "locale": "zh-CN",
+    "viewport": { "width": 1440, "height": 900 }
+  },
+  "study": {
+    "completedAt": null,
+    "facilitatorAttestation": false,
+    "notes": "只记录脱敏后的研究说明，不粘贴参与者原话。"
+  },
+  "participants": [],
+  "observations": [],
+  "findings": []
+}

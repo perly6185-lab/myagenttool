@@ -1,6 +1,6 @@
 # P4.14 审核、验收与发布门禁
 
-更新时间：2026-08-17
+更新时间：2026-09-02
 
 P4.14 的目标是把 P4.10–P4.13 从“代码已实现”提升为“有证据、可发布、可回滚”。发布门禁不以单个测试通过作为结论，而以代码、数据、安全、构建和用户流程共同通过为准。
 
@@ -14,6 +14,7 @@ P4.14 的目标是把 P4.10–P4.13 从“代码已实现”提升为“有证�
 | P4.13 数据保护 | 敏感 diff 脱敏、快照/状态 `0600`、快照清理、错误最小化 | P4.13 security test |
 | Channel 普通用户流程 | 不要求用户知道内部 ID；确认、失败、回退、人工处理提示可理解 | Channel conversation/integration tests |
 | Web 控制台 | 类型检查、生产构建、批次状态可显示 | Web typecheck/build |
+| 风险提醒可理解性 | 至少 5 名普通用户完成 8 个场景；独立理解率至少 90%；关键误解为 0 | R5 聚合验收证据 |
 | 发布产物 | 当前平台构建产物可验证；Windows/Linux 必须在原生 runner 验证 | desktop preflight/package verify |
 
 ## 2. 执行门禁
@@ -22,8 +23,10 @@ P4.14 的目标是把 P4.10–P4.13 从“代码已实现”提升为“有证�
 
 ```text
 pnpm release:p4-14:check
-pnpm release:p4-14
+P4_14_RISK_ACCEPTANCE_FILE=/absolute/path/to/observations.json pnpm release:p4-14
 ```
+
+`release:p4-14:check` 只检查门禁配置是否可执行，不表示发布条件已经满足。正式命令首先验证 R5 观察文件；文件缺失、权限过宽、数据集摘要不匹配、验收产品 commit 与当前候选 commit 不一致、样本不足、正确率不足或出现关键误解时，后续构建检查不会开始。Unix 平台上的观察文件权限必须为 `0600`。
 
 `release:p4-14` 会生成：
 
@@ -31,7 +34,7 @@ pnpm release:p4-14
 .myagenttool/release-candidate/p4-14-<platform>-<arch>.json
 ```
 
-该 manifest 记录检查项、版本、平台、耗时和有限的尾部输出，不记录文件原文、凭证或完整任务内容。发布候选还必须执行：
+该 schema v2 manifest 记录检查项、版本、平台、commit、工作区状态、耗时、已知限制、回滚策略和有限的尾部输出。R5 只进入参与者数、分母、正确率、关键误解数和场景问题码等聚合值，不记录观察文件路径、匿名参与者 ID、逐条回答、主持人备注或原始内容。发布候选还必须执行：
 
 ```text
 pnpm test:ci
@@ -61,6 +64,8 @@ CI 需要在 Linux、macOS、Windows 原生 runner 分别生成候选证据。�
 - 批次失败后出现部分写入但无 journal、无补偿结果或无法人工定位。
 - 外部文件发生变化后仍自动覆盖文件。
 - 任一平台缺少原生构建或候选证据 manifest。
+- R5 真实用户验收记录缺失、未通过、数据集谱系不匹配、参与者测试的产品 commit 与候选 commit 不同，或记录包含不允许字段。
+- 候选代码没有可解析 commit，或工作区不是 clean 状态。
 - Server/Web 类型检查、生产构建、CI gate 或 P4.14 gate 失败。
 - 发布说明缺少已知限制、数据影响或回滚说明。
 
@@ -74,3 +79,7 @@ P4.14 只负责形成发布候选和证据，不自动打 tag、上传安装包�
 - 生产发布、安装包分发和 GitHub Release 均经过明确批准。
 
 最终结论只能使用以下状态之一：`passed`、`passed_with_known_limitations`、`blocked`。未提供平台证据时不得标记为 `passed`。
+
+当前 P4.14 manifest 固定披露三项限制：未知证据状态禁止写入、普通任务页只查看办公恢复证据而不提供无治理重试/回滚，以及对外发送、付款、删除和权限变化继续独立确认。因此全量门禁通过时机器结论为 `passed_with_known_limitations`；任一检查失败时为 `blocked`。
+
+回退安装上一候选版本时，不得删除 `delivery_evidence`、`review_action_receipts` 或 `office_batch_journal`。回退顺序固定为停止新写入、安装上一候选、重启服务、验证 journal 可读性、检查未收敛批次。P4.14 只生成证据，不自动执行安装、tag、上传或生产发布。

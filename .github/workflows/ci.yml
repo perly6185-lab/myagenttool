@@ -152,6 +152,7 @@ jobs:
         run: |
           pnpm ai:eval-subcap
           pnpm eval:intent:all
+          pnpm accept:risk-reminders:verify
           pnpm release:mail
           pnpm test:commercial-routine-release
           pnpm eval:commercial-routine

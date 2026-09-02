@@ -3,6 +3,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  P414_KNOWN_LIMITATIONS,
+  P414_ROLLBACK_POLICY,
+  inspectP414CandidateSource,
+  projectP414Conclusion,
+  runRiskReminderAcceptanceReleaseGate,
+} from "./p4-14-evidence.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const checkOnly = process.argv.includes("--check");
@@ -13,6 +20,16 @@ const output = resolve(
 );
 
 const checks = [
+  {
+    id: "risk-reminder-user-acceptance",
+    kind: "riskAcceptance",
+    evidence: "R5 aggregated ordinary-user comprehension gate",
+  },
+  {
+    id: "candidate-source",
+    kind: "candidateSource",
+    evidence: "immutable source commit and clean worktree",
+  },
   {
     id: "server-static-check",
     command: process.execPath,
@@ -79,7 +96,7 @@ const checks = [
 if (checkOnly) {
   if (!pnpmEntry) fail("P4.14 requires execution through pnpm so package checks cannot be skipped.");
   for (const check of checks) {
-    if (!check.command || !existsSync(resolve(root, check.cwd))) {
+    if ((!check.command && !check.kind) || (check.cwd && !existsSync(resolve(root, check.cwd)))) {
       fail(`P4.14 check is not runnable: ${check.id}`);
     }
   }
@@ -90,39 +107,58 @@ if (checkOnly) {
 if (!pnpmEntry) fail("P4.14 requires execution through pnpm.");
 const startedAt = new Date().toISOString();
 const results = [];
+const candidateSource = inspectP414CandidateSource({ repoRoot: root });
 for (const check of checks) {
-  const started = Date.now();
-  const result = spawnSync(check.command, check.args, {
-    cwd: resolve(root, check.cwd),
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: Number(process.env.P4_14_CHECK_TIMEOUT_MS ?? 10 * 60 * 1000),
-  });
-  const outputText = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  const passed = result.status === 0 && !result.error;
-  results.push({
-    id: check.id,
-    status: passed ? "passed" : "failed",
-    evidence: check.evidence,
-    command: [check.command, ...check.args].join(" "),
-    durationMs: Date.now() - started,
-    error: result.error?.message ?? null,
-    output: outputText.slice(-3_000),
-  });
+  let checkResult;
+  if (check.kind === "riskAcceptance") {
+    checkResult = runRiskReminderAcceptanceReleaseGate({
+      evidencePath: process.env.P4_14_RISK_ACCEPTANCE_FILE,
+      expectedProductCommit: candidateSource.source.commit,
+    });
+  } else if (check.kind === "candidateSource") {
+    checkResult = candidateSource;
+  } else {
+    const started = Date.now();
+    const result = spawnSync(check.command, check.args, {
+      cwd: resolve(root, check.cwd),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: Number(process.env.P4_14_CHECK_TIMEOUT_MS ?? 10 * 60 * 1000),
+    });
+    const outputText = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    const passed = result.status === 0 && !result.error;
+    checkResult = {
+      id: check.id,
+      status: passed ? "passed" : "failed",
+      evidence: check.evidence,
+      command: [check.command, ...check.args].join(" "),
+      durationMs: Date.now() - started,
+      error: result.error?.message ?? null,
+      output: outputText.slice(-3_000),
+    };
+  }
+  results.push(checkResult);
+  const passed = checkResult.status === "passed";
   console.log(`[p4.14] ${passed ? "PASS" : "FAIL"} ${check.id}`);
   if (!passed) break;
 }
 
+const passed = results.length === checks.length && results.every((item) => item.status === "passed");
+const source = candidateSource.source;
 const manifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   gate: "P4.14",
   platform: process.platform,
   architecture: process.arch,
   node: process.version,
+  commit: source?.commit ?? null,
+  worktreeState: source?.worktreeState ?? "not_checked",
   startedAt,
   completedAt: new Date().toISOString(),
-  status: results.length === checks.length && results.every((item) => item.status === "passed")
-    ? "passed" : "failed",
+  status: passed ? "passed" : "failed",
+  conclusion: projectP414Conclusion(passed),
+  knownLimitations: P414_KNOWN_LIMITATIONS,
+  rollback: P414_ROLLBACK_POLICY,
   results,
 };
 mkdirSync(dirname(output), { recursive: true });
