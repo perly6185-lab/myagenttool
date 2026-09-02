@@ -2628,7 +2628,7 @@ function WorkItemIntentCard({
   const tone = summary.state === "aligned" ? "success" : summary.state === "needs_confirmation" ? "warning" : "neutral";
   return (
     <section
-      className={`rounded-xl border p-4 ${summary.state === "needs_confirmation" ? "border-warning/35 bg-warning/[0.055]" : "border-primary/25 bg-primary/[0.035]"}`}
+      className={`min-w-0 rounded-xl border p-4 [overflow-wrap:anywhere] ${summary.state === "needs_confirmation" ? "border-warning/35 bg-warning/[0.055]" : "border-primary/25 bg-primary/[0.035]"}`}
       aria-label={language === "zh" ? "AI 对任务的理解" : "AI understanding of the task"}
       data-testid="work-item-intent-summary"
     >
