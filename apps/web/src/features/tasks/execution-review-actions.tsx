@@ -1,5 +1,9 @@
 import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  normalizeWorkItemReviewBlockedReasonCodes,
+  type WorkItemReviewBlockedReasonCode,
+} from "@myagenttool/protocol/delivery-evidence";
 import type { WorkItemReviewAction } from "./task-view-types";
 
 const ACTION_COPY: Record<string, [string, string]> = {
@@ -19,7 +23,7 @@ const ACTION_COPY: Record<string, [string, string]> = {
   apply_office_result: ["应用办公结果", "Apply office result"],
 };
 
-const BLOCKED_REASON_COPY: Record<string, [string, string]> = {
+const BLOCKED_REASON_COPY: Record<WorkItemReviewBlockedReasonCode, [string, string]> = {
   changes_unavailable: ["当前没有可查看的变更文件。", "No changed files are available to view."],
   execution_action_in_flight_or_unknown: ["上一次操作仍在处理中，或结果尚未确认；请先重新检查状态。", "The previous action is still running or unconfirmed. Recheck its status first."],
   auto_run_required: ["这项操作只适用于由 AI 自动执行的任务。", "This action is only available for AI auto-runs."],
@@ -36,10 +40,12 @@ const BLOCKED_REASON_COPY: Record<string, [string, string]> = {
   office_batch_attention: ["办公批次包含失败、待处理或状态未知的项目，请先检查批次详情。", "The office batch has failed, pending, or unknown items. Review its details first."],
   office_batch_rolled_back: ["办公批次已经回滚，需要先确认恢复结果。", "The office batch was rolled back. Confirm its recovery result first."],
   office_batch_in_progress: ["办公批次仍在处理中，请等待完成。", "The office batch is still in progress. Wait for it to finish."],
+  office_batch_evidence_inconsistent: ["办公批次的操作计数或恢复记录不一致，请先核对批次详情。", "The office batch operation counts or recovery records are inconsistent. Review the batch details first."],
   office_rollback_incomplete: ["办公批次仅部分回滚，仍有项目未恢复。", "The office batch was only partially rolled back; some items remain unrestored."],
   delivery_evidence_not_ready: ["交付证据尚未准备完整，暂时不能应用结果。", "Delivery evidence is not complete enough to apply the result."],
   input_no_longer_required: ["AI 当前已不再等待回答，请刷新任务状态。", "AI is no longer waiting for an answer. Refresh the task state."],
   approval_no_longer_pending: ["这项审批已不再等待处理，请刷新任务状态。", "This approval is no longer pending. Refresh the task state."],
+  delivery_action_forbidden_by_intent: ["当前任务约束不允许执行这项交付操作。", "The current task constraints do not allow this delivery operation."],
 };
 
 const READ_ONLY_ACTION_KINDS = new Set(["open_details", "review_result", "view_result", "view_changes", "view_batch_details"]);
@@ -53,17 +59,16 @@ export function reviewActionLabel(kind: string, language: "zh" | "en") {
   return ACTION_COPY[kind]?.[index] ?? kind.replaceAll("_", " ");
 }
 
-function blockedReasonCopy(code: string, language: "zh" | "en") {
+function blockedReasonCopy(code: WorkItemReviewBlockedReasonCode, language: "zh" | "en") {
   const index = language === "zh" ? 0 : 1;
-  return BLOCKED_REASON_COPY[code]?.[index]
-    ?? (language === "zh" ? `当前条件不满足：${code.replaceAll("_", " ")}` : `Current prerequisite not met: ${code.replaceAll("_", " ")}`);
+  return BLOCKED_REASON_COPY[code][index];
 }
 
 export function reviewActionBlockedReasons(action: WorkItemReviewAction | null, language: "zh" | "en", locallyLocked = false) {
-  const codes = locallyLocked && !action?.blockedReasonCodes.includes("execution_action_in_flight_or_unknown")
+  const rawCodes = locallyLocked && !action?.blockedReasonCodes.includes("execution_action_in_flight_or_unknown")
     ? ["execution_action_in_flight_or_unknown", ...(action?.blockedReasonCodes ?? [])]
     : action?.blockedReasonCodes ?? [];
-  return [...new Set(codes)].map((code) => blockedReasonCopy(code, language));
+  return normalizeWorkItemReviewBlockedReasonCodes(rawCodes).map((code) => blockedReasonCopy(code, language));
 }
 
 export function ExecutionReviewActionList({

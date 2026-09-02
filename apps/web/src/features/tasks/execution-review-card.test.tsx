@@ -49,6 +49,41 @@ function review(overrides: Partial<WorkItemExecutionReview> = {}): WorkItemExecu
 }
 
 describe("execution review card", () => {
+  it("shows the frozen intent instead of reinterpreting the current task", () => {
+    render(<ExecutionReviewCard
+      review={review({
+        state: "review_ready",
+        stage: "review",
+        reviewIntent: {
+          schemaVersion: 1,
+          source: "frozen_execution_contract",
+          intentDigest: "intent:frozen:analysis",
+          goal: "Only analyze src; do not modify files",
+          expectedOutput: "Risk list",
+          taskKind: "software_analysis",
+          action: { accessMode: "read_only", operation: "read_files", forbiddenActions: ["commit", "pull_request", "push"] },
+          materials: { inputCount: 1, inputTitles: ["src"], changeTargetCount: 0, changeTargetTitles: [] },
+          delivery: { destination: "task", platformId: null, platformLabel: null },
+          confirmation: {
+            requestedOperation: "apply_local_changes",
+            operation: "review_result",
+            effectCode: "result_only",
+            riskCode: "uncommitted_worktree_retained",
+            riskLevel: "low",
+            resultOnly: true,
+          },
+        },
+      })}
+      language="en"
+      onOpenDetails={vi.fn()}
+    />);
+
+    const basis = screen.getByTestId("execution-review-intent");
+    expect(within(basis).getByText(/Only analyze src/)).toBeTruthy();
+    expect(within(basis).getByText(/Risk list/)).toBeTruthy();
+    expect(within(basis).getByText(/Read-only/)).toBeTruthy();
+  });
+
   it("shows ordinary progress and makes the no-impact boundary explicit", () => {
     const open = vi.fn();
     render(<ExecutionReviewCard review={review()} language="en" onOpenDetails={open} />);

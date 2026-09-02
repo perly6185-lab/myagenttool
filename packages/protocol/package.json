@@ -47,6 +47,23 @@
       "types": "./src/review-verdict.ts",
       "default": "./src/review-verdict.mjs"
     },
+    "./delivery-evidence": {
+      "types": "./src/delivery-evidence.ts",
+      "default": "./src/delivery-evidence.mjs"
+    },
+    "./work-item-intent-contract": {
+      "types": "./src/work-item-intent-contract.ts",
+      "default": "./src/work-item-intent-contract.mjs"
+    },
+    "./work-item-intent-evaluation": {
+      "types": "./src/work-item-intent-evaluation.ts",
+      "default": "./src/work-item-intent-evaluation.mjs"
+    },
+    "./work-item-review-intent": {
+      "types": "./src/work-item-review-intent.ts",
+      "default": "./src/work-item-review-intent.mjs"
+    },
+    "./risk-reminder-user-acceptance-v1.json": "./src/risk-reminder-user-acceptance-v1.json",
     "./site": {
       "types": "./src/site.ts",
       "default": "./src/site.mjs"

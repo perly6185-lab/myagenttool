@@ -1,3 +1,5 @@
+import { projectWorkItemReviewIntent } from "@myagenttool/protocol/work-item-review-intent";
+
 import { resolveWorkItemExecution } from "./work-item-execution.mjs";
 import { latestExecutionActionReceipt } from "./work-item-execution-action.mjs";
 import { projectWorkItemReviewActions } from "./work-item-review-actions.mjs";
@@ -157,6 +159,7 @@ function reviewState(item, autoRun, invocation, executionState, startReceipt, st
 
 function projectImpact(autoRun, deliveryEvidence, reviewStateValue) {
   const batch = deliveryEvidence?.actionPreview?.officeDetails?.batch ?? null;
+  if (batch && !batch.countConsistent) return { status: "unknown", reasonCode: "office_batch_evidence_inconsistent" };
   if (batch?.state === "rolled_back") return { status: "rolled_back", reasonCode: "office_batch_rolled_back" };
   if (batch && (batch.failedCount > 0 || batch.state === "partial")) return { status: "partial", reasonCode: "office_batch_partial" };
   if (batch?.state === "committed") return { status: "applied", reasonCode: "office_batch_applied" };
@@ -214,6 +217,14 @@ export function projectWorkItemExecutionReview({
   const targetStatus = autoRun?.status ?? invocation?.status ?? startReceipt?.status ?? null;
   const verification = projectVerification(item, autoRun, invocation, executionState);
   const impact = projectImpact(autoRun, deliveryEvidence, stateValue);
+  const frozenIntentContract = autoRun?.executionContract?.intentContract
+    ?? item?.executionContractSnapshot?.intentContract
+    ?? item?.executionIntentContractSnapshot
+    ?? null;
+  const reviewIntent = projectWorkItemReviewIntent({
+    intentContract: frozenIntentContract,
+    deliveryEvidence,
+  });
   const actionReceipt = latestExecutionActionReceipt(autoRun, { now });
   const attentionCode = stateValue === "waiting"
     ? (autoRun?.status === "needs_input" ? "waiting_for_user" : executionState === "awaiting_approval" ? "waiting_for_approval" : startReceipt?.reasonCode ?? "waiting")
@@ -255,6 +266,7 @@ export function projectWorkItemExecutionReview({
     attentionCode,
     verification,
     impact,
+    reviewIntent,
     riskReasons: riskReview.riskReasons,
     recommendedAction: riskReview.recommendedAction,
     actionAvailability,

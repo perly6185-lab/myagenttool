@@ -1,4 +1,10 @@
 import type { WorkItemSection } from "@/store/ui-store";
+import type { WorkItemReviewIntent } from "@myagenttool/protocol/work-item-review-intent";
+import {
+  normalizeDeliveryEvidenceDomain,
+  normalizeDeliveryEvidenceRisk,
+  normalizeDeliveryEvidenceStatus,
+} from "@myagenttool/protocol/delivery-evidence";
 import type { LocalWorkItem, LocalWorkItemAutoRun, WorkItemExecutionKind, WorkItemExecutionState } from "./task-view-types";
 import type { WorkItemUserStatus } from "./work-item-user-status";
 import { COPY } from "./work-item-summary-copy";
@@ -98,12 +104,38 @@ export function deriveWorkItemIntentSummary({
   domain,
   language,
   completed = false,
+  reviewIntent = null,
 }: {
   item: LocalWorkItem;
   domain: DeliveryDecision["domain"];
   language: "zh" | "en";
   completed?: boolean;
+  reviewIntent?: WorkItemReviewIntent | null;
 }): WorkItemIntentSummary {
+  if (reviewIntent?.source === "frozen_execution_contract") {
+    const inputTitles = reviewIntent.materials?.inputTitles ?? [];
+    const changeTargetTitles = reviewIntent.materials?.changeTargetTitles ?? [];
+    const scopeParts = language === "zh"
+      ? [inputTitles.length ? `输入：${inputTitles.join("、")}` : null, changeTargetTitles.length ? `修改目标：${changeTargetTitles.join("、")}` : null]
+      : [inputTitles.length ? `Inputs: ${inputTitles.join(", ")}` : null, changeTargetTitles.length ? `Change targets: ${changeTargetTitles.join(", ")}` : null];
+    const readOnly = reviewIntent.action?.accessMode === "read_only";
+    return {
+      state: "aligned",
+      statusLabel: language === "zh" ? "本次执行已冻结" : "Frozen for this run",
+      goal: reviewIntent.goal ?? (language === "zh" ? "本次执行目标未记录" : "Run goal unavailable"),
+      expectedOutcome: reviewIntent.expectedOutput ?? (language === "zh" ? "本次预期结果未记录" : "Expected result unavailable"),
+      scope: scopeParts.filter(Boolean).join(language === "zh" ? "；" : "; ")
+        || (language === "zh" ? "以本次执行锁定的资料范围为准" : "Use the material scope locked for this run"),
+      boundary: completed
+        ? (language === "zh" ? "本次结果已按冻结意图完成；后续修改不会改写本次审核依据。" : "This result completed under the frozen intent; later edits do not rewrite this review basis.")
+        : readOnly
+          ? (language === "zh" ? "本次只读；确认结果不会授权应用、提交、创建 PR 或推送。" : "This run is read-only. Confirming the result does not authorize applying, committing, opening a pull request, or pushing.")
+          : (language === "zh" ? "审核与最终确认只使用本次冻结范围；新增范围需要新的执行确认。" : "Review and final confirmation use only this frozen scope; added scope requires a new run confirmation."),
+      confidenceReason: language === "zh"
+        ? `审核依据来自不可变执行快照（${reviewIntent.intentDigest}）。`
+        : `Review is based on the immutable execution snapshot (${reviewIntent.intentDigest}).`,
+    };
+  }
   const contract = item.channelTaskContract ?? null;
   const workMode = contract?.workMode ?? null;
   const mutation = contract?.dataMutationPreview ?? null;
@@ -165,6 +197,79 @@ export function deriveWorkItemIntentSummary({
         ? (language === "zh" ? "目标、预期结果和检查方式已经形成可执行约定。" : "The goal, expected result, and checks form an executable agreement.")
         : (language === "zh" ? "这是根据当前任务描述整理的理解，开始前仍可修改。" : "This understanding comes from the current task description and can still be changed before starting."),
   };
+}
+
+export type ReviewIntentConfirmationCopy = {
+  actionLabel: string;
+  dialogTitle: string;
+  dialogDescription: string;
+  dialogConfirm: string;
+  effect: string;
+  risk: string;
+};
+
+export function reviewIntentConfirmationCopy({
+  reviewIntent,
+  language,
+  fallback,
+}: {
+  reviewIntent: WorkItemReviewIntent | null | undefined;
+  language: "zh" | "en";
+  fallback: ReviewIntentConfirmationCopy;
+}): ReviewIntentConfirmationCopy {
+  if (reviewIntent?.source !== "frozen_execution_contract") return fallback;
+  const zh = language === "zh";
+  switch (reviewIntent.confirmation.effectCode) {
+    case "result_only":
+      return {
+        actionLabel: zh ? "确认结果并完成任务（不应用）" : "Approve result and complete without applying",
+        dialogTitle: zh ? "确认结果并完成任务？" : "Approve the result and complete the task?",
+        dialogDescription: zh
+          ? "系统只记录结果确认并完成任务；变更继续留在未提交工作树，不会应用、提交、创建 PR 或推送。"
+          : "Only result approval and task completion are recorded. Changes remain in the uncommitted worktree and are not applied, committed, opened as a pull request, or pushed.",
+        dialogConfirm: zh ? "确认完成，不应用" : "Complete without applying",
+        effect: zh
+          ? "只记录结果确认并完成任务；不会写入基础分支、创建提交、创建 PR 或推送远程。"
+          : "Only approve the result and complete the task; no base-branch write, commit, pull request, or push occurs.",
+        risk: zh ? "较低：基础分支和外部系统不变，结果继续由未提交工作树保管。" : "Low: the base branch and external systems remain unchanged; the uncommitted worktree retains the result.",
+      };
+    case "apply_local_changes":
+      return {
+        actionLabel: zh ? "审核通过并应用到本地" : "Approve and apply locally",
+        dialogTitle: zh ? "确认审核通过并应用到本地？" : "Approve and apply this delivery locally?",
+        dialogDescription: zh ? "系统会把已审核改动应用到本地基础分支并完成任务；不会推送或合并远端分支。" : "The reviewed changes will be applied to the local base branch and the task completed. No remote branch will be pushed or merged.",
+        dialogConfirm: zh ? "确认应用到本地" : "Apply locally",
+        effect: zh ? "把本次已审核变更写入本地基础分支并完成任务；不会关闭外部 Issue。" : "Apply the reviewed changes to the local base branch and complete the task; external issues remain open.",
+        risk: zh ? "中等：会实际修改本地项目代码，请确认结果符合预期。" : "Medium: this changes local project code; confirm that the result matches expectations.",
+      };
+    case "create_pull_request":
+    case "update_pull_request": {
+      const update = reviewIntent.confirmation.effectCode === "update_pull_request";
+      return {
+        actionLabel: update ? (zh ? "审核通过并更新 Pull Request" : "Approve and update pull request") : (zh ? "审核通过并创建 Pull Request" : "Approve and create pull request"),
+        dialogTitle: update ? (zh ? "确认审核通过并更新现有 Pull Request？" : "Approve and update the existing pull request?") : (zh ? "确认审核通过并创建 Pull Request？" : "Approve and create a pull request?"),
+        dialogDescription: update
+          ? (zh ? "系统会把最新改动推送到已有 Pull Request；不会创建重复 PR 或直接合并远端主分支。" : "The latest changes will be pushed to the existing pull request; no duplicate pull request is created and the remote base branch is not merged.")
+          : (zh ? "系统会创建一个待审核 Pull Request；不会直接合并远端主分支。" : "A reviewable pull request will be created without merging the remote base branch."),
+        dialogConfirm: update ? (zh ? "确认更新 Pull Request" : "Update pull request") : (zh ? "确认创建 Pull Request" : "Create pull request"),
+        effect: update
+          ? (zh ? "更新现有 Pull Request 供后续合并；不会直接改动远端主分支。" : "Update the existing pull request for later merge; the remote base branch is not changed directly.")
+          : (zh ? "创建一个 Pull Request 供后续合并；不会直接改动远端主分支。" : "Create a pull request for later merge; the remote base branch is not changed directly."),
+        risk: zh ? "较低：主分支不直接改变，但会产生远端分支更新和协作通知。" : "Low: the base branch is unchanged directly, but remote branch updates and collaboration notifications may occur.",
+      };
+    }
+    case "apply_office_result":
+      return {
+        actionLabel: zh ? "审核通过并应用办公结果" : "Approve and apply office result",
+        dialogTitle: zh ? "确认审核通过并应用办公结果？" : "Approve and apply the office result?",
+        dialogDescription: zh ? "系统只应用冻结意图和当前预览内的办公结果；不会扩大范围、删除其他资料或自动对外发送。" : "Only the office result within the frozen intent and current preview is applied; scope is not expanded and nothing else is deleted or sent externally.",
+        dialogConfirm: zh ? "确认应用办公结果" : "Apply office result",
+        effect: zh ? "把本次办公结果应用到冻结范围内的项目资料并完成任务；外部发送仍需单独确认。" : "Apply the office result to project materials within the frozen scope and complete the task; external sending still needs separate confirmation.",
+        risk: zh ? "中等：会写入项目资料，请确认目标和恢复证据。" : "Medium: this writes project materials; confirm the targets and recovery evidence.",
+      };
+    default:
+      return fallback;
+  }
 }
 
 export function deliveryDomainFor({
@@ -273,6 +378,8 @@ export function deriveDeliveryDecision({
   reviewFindings = [],
   reviewSummary = null,
   evidenceStatus = null,
+  evidenceRisk = null,
+  evidenceDomain = null,
   verification,
   executionKind,
   taskKind = null,
@@ -287,22 +394,36 @@ export function deriveDeliveryDecision({
   reviewFindings?: DeliveryReviewFinding[];
   reviewSummary?: string | null;
   evidenceStatus?: string | null;
+  evidenceRisk?: string | null;
+  evidenceDomain?: string | null;
   verification: { passed: boolean; verified: boolean; summary: string | null } | null;
   executionKind: WorkItemExecutionKind | null;
   taskKind?: string | null;
   taskText?: string;
   resultFiles: string[];
 }): DeliveryDecision {
-  const domain = deliveryDomainFor({ executionKind, taskKind, taskText });
+  const inferredDomain = deliveryDomainFor({ executionKind, taskKind, taskText });
+  const domain: DeliveryDecision["domain"] = evidenceDomain == null
+    ? inferredDomain
+    : normalizeDeliveryEvidenceDomain(evidenceDomain);
+  const hasEvidenceStatus = evidenceStatus != null;
+  const normalizedEvidenceStatus = normalizeDeliveryEvidenceStatus(evidenceStatus);
+  const normalizedEvidenceRisk = normalizeDeliveryEvidenceRisk(evidenceRisk);
   const domainLabel = deliveryDomainLabel(domain, language);
   const scope = changedFileScope(changedFiles, language, executionKind, resultFiles, domain);
   const verifiedPass = verification?.verified === true && verification.passed === true;
   const verifiedFail = verification?.verified === true && verification.passed === false;
-  const verificationMissing = verification?.verified === false;
-  const reviewInconsistent = reviewVerdict === "changes_requested"
-    && reviewFindings.length === 0
-    && reviewSummaryLooksClean(reviewSummary);
-  const reviewWaiting = !reviewVerdict && ["queued", "running"].includes(reviewStatus ?? "");
+  const verificationMissing = hasEvidenceStatus
+    ? normalizedEvidenceStatus === "verification_missing"
+    : verification?.verified === false;
+  const reviewInconsistent = hasEvidenceStatus
+    ? normalizedEvidenceStatus === "review_inconsistent"
+    : reviewVerdict === "changes_requested"
+      && reviewFindings.length === 0
+      && reviewSummaryLooksClean(reviewSummary);
+  const reviewWaiting = hasEvidenceStatus
+    ? normalizedEvidenceStatus === "review_pending"
+    : !reviewVerdict && ["queued", "running"].includes(reviewStatus ?? "");
   const confirmEffect = mode === "pull_request"
     ? language === "zh"
       ? "创建一个 Pull Request 供后续合并；不会直接改动远端主分支，本地任务会继续保留在审核阶段。"
@@ -327,22 +448,29 @@ export function deriveDeliveryDecision({
   const revisionRisk = language === "zh"
     ? "较低：不会把当前变更写入基础分支，但会增加一次 AI 运行时间，可能产生额外费用。"
     : "Low: current changes are not applied, but another AI run may take time and incur cost.";
-  const officeBatchNeedsAttention = evidenceStatus === "office_batch_attention";
-  const officeBatchRolledBack = evidenceStatus === "office_batch_rolled_back";
-  const officeBatchInProgress = evidenceStatus === "office_batch_in_progress";
+  const officeBatchNeedsAttention = hasEvidenceStatus && normalizedEvidenceStatus === "office_batch_attention";
+  const officeBatchRolledBack = hasEvidenceStatus && normalizedEvidenceStatus === "office_batch_rolled_back";
+  const officeBatchInProgress = hasEvidenceStatus && normalizedEvidenceStatus === "office_batch_in_progress";
+  const changesRequested = hasEvidenceStatus
+    ? normalizedEvidenceStatus === "changes_requested"
+    : reviewVerdict === "changes_requested";
+  const verificationFailed = hasEvidenceStatus
+    ? normalizedEvidenceStatus === "verification_failed"
+    : verifiedFail;
+  const evidenceAllowsReady = !hasEvidenceStatus
+    || (normalizedEvidenceStatus === "ready" && normalizedEvidenceRisk === "low");
 
-  if (reviewVerdict === "changes_requested" || verifiedFail) {
-    const changesRequested = reviewVerdict === "changes_requested";
+  if (reviewInconsistent || changesRequested || verificationFailed) {
     const statusLabel = reviewInconsistent
       ? language === "zh" ? "复核结论不一致" : "Review is inconsistent"
-      : verifiedFail
+      : verificationFailed
         ? language === "zh" ? "需要修复验证失败" : "Verification needs fixing"
         : language === "zh" ? "需要返工" : "Changes needed";
     return {
       state: "changes", risk: reviewInconsistent ? "unknown" : "high", domain, domainLabel, statusLabel, scope,
       riskReason: reviewInconsistent
         ? language === "zh" ? "复核状态标记为需修改，但没有给出具体问题，摘要反而显示结果一致；先重新复核，不要盲目修改。" : "The review says changes are needed but gives no finding, while its summary sounds positive. Re-review before changing the result."
-        : verifiedFail
+        : verificationFailed
           ? language === "zh" ? "自动验证有明确失败项；先查看失败输出，再决定是否让 AI 修复。" : "Automated verification has a confirmed failure. Inspect its output before asking AI to revise."
           : changesRequested
             ? language === "zh" ? `${reviewFindings.length} 项复核问题阻止当前交付，请先处理具体问题。` : `${reviewFindings.length} review finding${reviewFindings.length === 1 ? "" : "s"} blocks this delivery; address the specific finding${reviewFindings.length === 1 ? "" : "s"} first.`
@@ -352,7 +480,7 @@ export function deriveDeliveryDecision({
         : language === "zh" ? "这份结果暂不建议接受" : "Do not accept this result yet",
       checks: reviewInconsistent
         ? language === "zh" ? "复核状态和摘要不一致，系统没有足够依据判断是否需要修改。" : "The review status and summary disagree, so there is not enough evidence to decide whether changes are needed."
-        : verifiedFail
+        : verificationFailed
           ? language === "zh" ? "自动验证未通过，当前结果存在明确失败项。" : "Automated verification failed, so the result has a confirmed problem."
           : language === "zh" ? "自动复核发现需要处理的问题。" : "Automated review found issues that need to be fixed.",
       recommendation: reviewInconsistent
@@ -405,7 +533,7 @@ export function deriveDeliveryDecision({
       confirmEffect, confirmRisk, revisionEffect, revisionRisk,
     };
   }
-  if (executionKind === "article_import" && verifiedPass) {
+  if (executionKind === "article_import" && verifiedPass && evidenceAllowsReady) {
     return {
       state: "ready", risk: "low", domain, domainLabel, scope,
       statusLabel: language === "zh" ? "可以确认" : "Ready to confirm",
@@ -420,7 +548,7 @@ export function deriveDeliveryDecision({
       confirmEffect, confirmRisk, revisionEffect, revisionRisk,
     };
   }
-  if (reviewVerdict === "approved" && verifiedPass) {
+  if (reviewVerdict === "approved" && verifiedPass && evidenceAllowsReady) {
     return {
       state: "ready", risk: "low", domain, domainLabel, scope,
       statusLabel: language === "zh" ? "可以确认" : "Ready to confirm",

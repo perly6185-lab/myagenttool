@@ -1,0 +1,42 @@
+{
+  "frozenIntent": {
+    "snapshotKind": "execution_snapshot",
+    "readOnly": true,
+    "digest": "intent:frozen:analysis",
+    "goal": "只分析 src 目录，不修改文件",
+    "expectedOutput": "风险清单",
+    "taskKind": "software_analysis",
+    "action": {
+      "accessMode": "read_only",
+      "operation": "read_files",
+      "forbiddenActions": ["commit", "pull_request", "push"]
+    },
+    "materials": {
+      "inputCount": 1,
+      "inputs": [{ "title": "src" }],
+      "changeTargets": []
+    },
+    "delivery": {
+      "destination": "task",
+      "platformId": null,
+      "platformLabel": null
+    }
+  },
+  "deliveryEvidence": {
+    "schemaVersion": 1,
+    "status": "ready",
+    "risk": "low",
+    "domain": "development",
+    "blockingReasonCodes": ["delivery_action_forbidden_by_intent"],
+    "actionPreview": {
+      "operation": "apply_local_changes",
+      "canProceed": false,
+      "blockedReasonCodes": ["delivery_action_forbidden_by_intent"]
+    }
+  },
+  "mutableTask": {
+    "title": "现在把所有代码提交并推送",
+    "body": "创建 Pull Request",
+    "intentStatement": "提交并推送全部代码"
+  }
+}

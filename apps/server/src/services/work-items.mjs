@@ -61,7 +61,11 @@ import { projectWorkItemPlanActual } from "./work-item-plan-actual.mjs";
 import { assessWorkItemCompletion, taskCompletionQualityMetrics } from "./work-item-completion-assessment.mjs";
 import { projectWorkItemContextSummary } from "./work-item-context-summary.mjs";
 import { projectWorkItemJourney } from "./work-item-journey.mjs";
-import { buildWorkItemIntentContract, freezeWorkItemIntentContract } from "./work-item-intent-contract.mjs";
+import {
+  buildWorkItemIntentContract,
+  freezeWorkItemIntentContract,
+  workItemIntentResolutionScopeDigest,
+} from "./work-item-intent-contract.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -8275,12 +8279,14 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
   }
 
-  function updateTaskContext({
-    workItemId,
-    expectedRevision,
-    deliveryDestination,
-    materialRoles = [],
-  } = {}, actor = null) {
+  function updateTaskContext(input = {}, actor = null) {
+    const {
+      workItemId,
+      expectedRevision,
+      deliveryDestination,
+      materialRoles = [],
+      intentResolution = null,
+    } = input;
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
     if (item.state === "closed" || item.status === "done" || item.archivedAt) {
@@ -8289,6 +8295,115 @@ export function createWorkItemService({
     if ((item.executionBindings ?? []).length
       || (item.executionStartRequest && item.executionStartRequest.status !== "cancelled")) {
       return { ok: false, status: 409, body: { error: "work_item_context_locked_after_start" } };
+    }
+    if (intentResolution != null) {
+      if (!intentResolution || typeof intentResolution !== "object" || Array.isArray(intentResolution)) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_intent_resolution" } };
+      }
+      const allowedInputFields = new Set(["workItemId", "expectedRevision", "intentResolution"]);
+      const allowedResolutionFields = new Set(["idempotencyKey", "expectedIntentDigest", "conflictCode", "choiceId"]);
+      if (Object.keys(input).some((field) => !allowedInputFields.has(field))
+        || Object.keys(intentResolution).some((field) => !allowedResolutionFields.has(field))) {
+        return { ok: false, status: 400, body: { error: "work_item_intent_resolution_must_be_isolated" } };
+      }
+      const idempotencyKey = String(intentResolution.idempotencyKey ?? "").trim();
+      const conflictCode = String(intentResolution.conflictCode ?? "").trim();
+      const choiceId = String(intentResolution.choiceId ?? "").trim();
+      const expectedIntentDigest = String(intentResolution.expectedIntentDigest ?? "").trim().toLowerCase();
+      if (!idempotencyKey || idempotencyKey.length > 200
+        || !conflictCode || conflictCode.length > 100
+        || !choiceId || choiceId.length > 100
+        || !/^[a-f0-9]{64}$/.test(expectedIntentDigest)) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_intent_resolution" } };
+      }
+      const prior = (item.intentClarificationResolutions ?? [])
+        .find((resolution) => resolution.idempotencyKey === idempotencyKey);
+      if (prior) {
+        if (prior.code !== conflictCode || prior.choiceId !== choiceId) {
+          return { ok: false, status: 409, body: { error: "work_item_intent_resolution_idempotency_conflict" } };
+        }
+        return {
+          ok: true,
+          status: 200,
+          body: { workItem: workItemView(item, actor), intentResolution: prior, replayed: true },
+        };
+      }
+      if (!Number.isInteger(expectedRevision)) {
+        return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+      }
+      if (expectedRevision !== item.revision) {
+        return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+      }
+      const currentIntentContract = buildWorkItemIntentContract(item);
+      if (currentIntentContract.digest !== expectedIntentDigest) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: "work_item_intent_clarification_stale", currentIntentContract },
+        };
+      }
+      if (currentIntentContract.clarification?.code !== conflictCode) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: "work_item_intent_clarification_changed", currentIntentContract },
+        };
+      }
+      const option = currentIntentContract.clarification.options
+        .find((candidate) => candidate.id === choiceId);
+      if (!option) {
+        return { ok: false, status: 400, body: { error: "work_item_intent_resolution_choice_not_allowed" } };
+      }
+      if (option.applyMode !== "automatic") {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: "work_item_intent_choice_requires_manual_edit", targetFields: option.targetFields },
+        };
+      }
+      const allowedChoice = conflictCode === "write_request_exceeds_confirmed_boundary"
+        && ["keep_read_only", "allow_write"].includes(choiceId);
+      if (!allowedChoice) {
+        return { ok: false, status: 409, body: { error: "work_item_intent_resolution_not_implemented" } };
+      }
+
+      const timestamp = now();
+      const resolution = {
+        idempotencyKey,
+        code: conflictCode,
+        choiceId,
+        scopeDigest: workItemIntentResolutionScopeDigest(item, conflictCode),
+        targetFields: option.targetFields,
+        resolvedAt: timestamp,
+        resolvedBy: actorUser(actor),
+      };
+      runTx(() => {
+        item.intentClarificationResolutions = [
+          ...(item.intentClarificationResolutions ?? []),
+          resolution,
+        ].slice(-20);
+        item.revision += 1;
+        item.updatedAt = timestamp;
+        item.lastModifiedBy = actorUser(actor);
+        recordActivity(item, actor, "work_item_intent_clarification_resolved", {
+          code: conflictCode,
+          choiceId,
+          targetFields: option.targetFields,
+        });
+        appendEvent({
+          invocationId: null,
+          type: "work_item_intent_clarification_resolved",
+          level: "info",
+          message: `${item.localRef} intent clarification resolved with a controlled choice.`,
+          data: { workItemId: item.id, revision: item.revision, conflictCode, choiceId, actorTeamId: actorTeam(actor) },
+        });
+      });
+      notifyWorkItemChanged(item, actor, "intent_clarification_resolved");
+      return {
+        ok: true,
+        status: 200,
+        body: { workItem: workItemView(item, actor), intentResolution: resolution, replayed: false },
+      };
     }
     if (!Number.isInteger(expectedRevision)) {
       return { ok: false, status: 400, body: { error: "expected_revision_required" } };

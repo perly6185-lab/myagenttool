@@ -1,3 +1,10 @@
+import {
+  normalizeDeliveryEvidenceDomain,
+  normalizeDeliveryEvidenceRisk,
+  normalizeDeliveryEvidenceStatus,
+  normalizeWorkItemReviewBlockedReasonCodes,
+  projectOfficeBatchEvidence,
+} from "@myagenttool/protocol/delivery-evidence";
 import { normalizeReviewVerdict } from "@myagenttool/protocol/review-verdict";
 
 import { workResourceId } from "./work-resource-directory.mjs";
@@ -155,60 +162,15 @@ function officeActionDetails(item) {
     || Boolean(ledger?.journal?.snapshots?.length)
     || Number(ledger?.journal?.snapshotCount) > 0;
   const operation = mutation?.operation ?? ledger?.operation ?? null;
-  const children = Array.isArray(ledger?.children) ? ledger.children : [];
-  const failedChildren = children.filter((child) => ["invalidated", "expired"].includes(child?.state)).length;
-  const committedChildren = children.filter((child) => child?.state === "committed").length;
-  const restoredChildren = children.filter((child) => child?.state === "rolled_back").length;
-  const unknownChildren = children.filter((child) => child?.state === "unknown").length;
-  const pendingChildren = children.filter((child) => !["committed", "rolled_back", "invalidated", "expired", "unknown"].includes(child?.state)).length;
-  const rollback = ledger?.journal?.rollback ?? null;
-  const journalAppliedCount = Math.max(0, Number(ledger?.journal?.appliedCount)
-    || (Array.isArray(ledger?.journal?.appliedPreviewIds) ? ledger.journal.appliedPreviewIds.length : 0));
-  const successCount = children.length
-    ? committedChildren
-    : ledger?.state === "committed" ? journalAppliedCount : 0;
-  const failedCount = Math.max(0, Number(rollback?.blockedTargets) || 0, failedChildren);
-  const restoredCount = Math.max(0, Number(rollback?.restoredTargets) || 0, restoredChildren);
-  const rollbackStatus = ledger?.state === "rolled_back"
-    ? "rolled_back"
-    : rollback && failedCount > 0
-      ? "partial"
-      : rollback || ledger?.journal?.snapshotCount > 0 || ledger?.journal?.snapshots?.length > 0
-        ? "prepared"
-        : "not_available";
   const batch = ledger?.kind === "batch"
-    ? (() => {
-      const targetCount = Number.isInteger(ledger.targetCount) ? ledger.targetCount : children.length;
-      const pendingCount = children.length
-        ? pendingChildren
-        : ["pending", "waiting", "committing"].includes(ledger?.state) ? targetCount : 0;
-      const unknownCount = Math.max(unknownChildren, targetCount - successCount - failedCount - restoredCount - pendingCount);
-      return {
-        state: boundedText(ledger.state, 40) || "pending",
-        targetCount,
-        operationCount: Number.isInteger(ledger.operationCount) ? ledger.operationCount : children.length,
-        successCount,
-        failedCount,
-        restoredCount,
-        pendingCount,
-        unknownCount,
-        rollback: {
-          status: rollbackStatus,
-          restoredTargets: Math.max(0, Number(rollback?.restoredTargets) || 0),
-          blockedTargets: Math.max(0, Number(rollback?.blockedTargets) || 0),
-        },
-        details: children.slice(0, 20).map((child) => ({
-          id: boundedText(child?.id, 200),
-          businessKey: boundedText(child?.businessKey, 300),
-          action: boundedText(child?.action, 40),
-          rowNumber: Number.isInteger(child?.rowNumber) ? child.rowNumber : null,
-          state: boundedText(child?.state, 40) || "pending",
-          changedFields: Array.isArray(child?.changedCells)
-            ? [...new Set(child.changedCells.map((cell) => boundedText(cell?.field, 120)).filter(Boolean))].slice(0, 20)
-            : [],
-        })),
-      };
-    })()
+    ? projectOfficeBatchEvidence({
+        state: ledger.state,
+        targetCount: ledger.targetCount,
+        operationCount: ledger.operationCount,
+        failedPreviewId: ledger.failedPreviewId,
+        children: ledger.children,
+        journal: ledger.journal,
+      })
     : null;
   return {
     targetFiles: [...new Set(targetFiles)].slice(0, 50),
@@ -247,7 +209,7 @@ export function buildDeliveryEvidence({
   branchName = null,
   remoteUrl = null,
 } = {}) {
-  const domain = deliveryDomain({ item, autoRun });
+  const domain = normalizeDeliveryEvidenceDomain(deliveryDomain({ item, autoRun }));
   const review = reviewEvidence(deliveryReview);
   const verification = verificationEvidence(item, deliveryReport, autoRun);
   const officeDetails = domain === "office" ? officeActionDetails(item) : null;
@@ -258,11 +220,14 @@ export function buildDeliveryEvidence({
   let decision = evidenceDecision;
   if (officeDetails?.batch) {
     const batchState = officeDetails.batch.state;
-    if (officeDetails.batch.failedCount > 0 || officeDetails.batch.unknownCount > 0 || ["partial", "needs_attention", "invalidated"].includes(batchState)) {
+    if (!officeDetails.batch.countConsistent
+      || officeDetails.batch.failedCount > 0
+      || officeDetails.batch.unknownCount > 0
+      || ["partial", "needs_attention", "invalidated", "expired", "unknown"].includes(batchState)) {
       decision = { status: "office_batch_attention", risk: "high" };
     } else if (batchState === "rolled_back") {
       decision = { status: "office_batch_rolled_back", risk: "medium" };
-    } else if (["pending", "waiting", "committing"].includes(batchState) && officeDetails.batch.pendingCount > 0) {
+    } else if (["pending", "waiting", "committing"].includes(batchState)) {
       decision = { status: "office_batch_in_progress", risk: "medium" };
     }
   }
@@ -270,7 +235,9 @@ export function buildDeliveryEvidence({
     ? deliveryReport.changedFiles.map((file) => boundedText(file, 500)).filter(Boolean)
     : [];
   const changedFiles = changedFileNames.slice(0, 100);
-  const intentAction = item?.executionIntentContractSnapshot?.action
+  const intentAction = autoRun?.executionContract?.intentContract?.action
+    ?? item?.executionContractSnapshot?.intentContract?.action
+    ?? item?.executionIntentContractSnapshot?.action
     ?? item?.intentContract?.action
     ?? buildWorkItemIntentContract(item).action;
   const forbiddenActions = new Set(Array.isArray(intentAction?.forbiddenActions) ? intentAction.forbiddenActions : []);
@@ -292,15 +259,24 @@ export function buildDeliveryEvidence({
     if (status === "office_batch_rolled_back") blockedReasonCodes.push("office_batch_rolled_back");
     if (status === "office_batch_in_progress") blockedReasonCodes.push("office_batch_in_progress");
   }
+  if (officeDetails?.batch && !officeDetails.batch.countConsistent) {
+    blockedReasonCodes.push("office_batch_evidence_inconsistent");
+  }
+  if (officeDetails?.batch?.rollback?.status === "partial") {
+    blockedReasonCodes.push("office_rollback_incomplete");
+  }
   if (deliveryActionForbidden) blockedReasonCodes.push("delivery_action_forbidden_by_intent");
+  const status = normalizeDeliveryEvidenceStatus(decision.status);
+  const risk = normalizeDeliveryEvidenceRisk(decision.risk);
+  const normalizedBlockedReasonCodes = normalizeWorkItemReviewBlockedReasonCodes(blockedReasonCodes);
   return {
     schemaVersion: EVIDENCE_SCHEMA_VERSION,
-    status: decision.status,
-    risk: decision.risk,
+    status,
+    risk,
     domain,
     review,
     verification,
-    blockingReasonCodes: blockedReasonCodes,
+    blockingReasonCodes: normalizedBlockedReasonCodes,
     actionPreview: {
       mode: deliveryMode,
       operation: projectedOperation,
@@ -315,8 +291,8 @@ export function buildDeliveryEvidence({
       officeDetails,
       reviewedCommit: review.reviewedCommit,
       requiresConfirmation: true,
-      canProceed: decision.status === "ready" && !deliveryActionForbidden,
-      blockedReasonCodes,
+      canProceed: status === "ready" && risk === "low" && !deliveryActionForbidden,
+      blockedReasonCodes: normalizedBlockedReasonCodes,
     },
   };
 }

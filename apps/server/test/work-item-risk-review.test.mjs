@@ -41,3 +41,22 @@ test("risk review distinguishes development repair from office partial-impact re
   assert.equal(office.recommendedAction.kind, "review_result");
   assert.deepEqual(office.riskReasons, [{ code: "office_batch_partial", severity: "high", scope: "external_impact" }]);
 });
+
+test("risk review names inconsistent office batch evidence instead of reporting a generic unknown impact", () => {
+  const result = projectWorkItemRiskReview({
+    state: "review_ready",
+    verification: { status: "passed" },
+    impact: { status: "unknown" },
+    deliveryEvidence: {
+      domain: "office",
+      actionPreview: { officeDetails: { batch: { countConsistent: false } } },
+    },
+  });
+
+  assert.deepEqual(result.riskReasons, [{
+    code: "office_batch_evidence_inconsistent",
+    severity: "high",
+    scope: "external_impact",
+  }]);
+  assert.equal(result.recommendedAction.kind, "review_result");
+});

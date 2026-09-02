@@ -2,7 +2,7 @@
 // the mutable server state, so risk policy can evolve and be tested independently
 // from execution lookup, timeline projection, and HTTP response composition.
 
-function projectRiskReasons({ state, attentionCode, verification, impact }) {
+function projectRiskReasons({ state, attentionCode, verification, impact, deliveryEvidence }) {
   const reasons = [];
   const add = (code, severity, scope) => {
     if (!reasons.some((reason) => reason.code === code)) reasons.push({ code, severity, scope });
@@ -13,7 +13,9 @@ function projectRiskReasons({ state, attentionCode, verification, impact }) {
   if (verification?.status === "failed") add("verification_failed", "high", "verification");
   if (verification?.status === "not_configured") add("verification_not_configured", "medium", "verification");
   if (verification?.status === "unavailable") add("verification_unavailable", "medium", "verification");
-  if (impact?.status === "unknown") add("external_impact_unknown", "medium", "external_impact");
+  const batchEvidenceInconsistent = deliveryEvidence?.actionPreview?.officeDetails?.batch?.countConsistent === false;
+  if (batchEvidenceInconsistent) add("office_batch_evidence_inconsistent", "high", "external_impact");
+  if (impact?.status === "unknown" && !batchEvidenceInconsistent) add("external_impact_unknown", "medium", "external_impact");
   if (impact?.status === "partial") add("office_batch_partial", "high", "external_impact");
   if (impact?.status === "rolled_back") add("office_batch_rolled_back", "medium", "external_impact");
   if (impact?.status === "proposed") add("pull_request_not_applied", "medium", "external_impact");
@@ -61,7 +63,7 @@ export function projectWorkItemRiskReview({
 } = {}) {
   return {
     needsAttention: ["waiting", "failed", "cancelled"].includes(state),
-    riskReasons: projectRiskReasons({ state, attentionCode, verification, impact }),
+    riskReasons: projectRiskReasons({ state, attentionCode, verification, impact, deliveryEvidence }),
     recommendedAction: projectRecommendedAction({ state, attentionCode, verification, deliveryEvidence }),
   };
 }

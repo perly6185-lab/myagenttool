@@ -12,7 +12,6 @@ import {
   FolderOpen,
   Library,
   Download,
-  Database,
   Eye,
   ExternalLink,
   MessageSquare,
@@ -36,7 +35,7 @@ import { useSessionUser } from "@/hooks/use-session-user";
 import { type SectionKey, type WorkItemSection } from "@/store/ui-store";
 import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item-progress-dialog";
 import { ExecutionStartConfirmation } from "./execution-start-confirmation";
-import { deriveExecutionStartSummary } from "./execution-start-summary";
+import { deriveExecutionStartSummary, type ExecutionStartClarificationOption } from "./execution-start-summary";
 import { ExecutionStartStatusCard } from "./execution-start-status-card";
 import { ExecutionReviewCard, type ExecutionActionReceipt } from "./execution-review-card";
 import {
@@ -54,6 +53,10 @@ import {
   WorkItemResultReview,
 } from "./work-item-result-review";
 import { WorkItemReviewDecisionSection } from "./work-item-review-decision-section";
+import { WorkItemRecordBindings } from "./work-item-record-bindings";
+import { WorkItemLedgerPostingPlan } from "./work-item-ledger-posting-plan";
+import { WorkItemChannelDataPlan, WorkItemChannelMutationPreview } from "./work-item-channel-data-contract";
+import { WorkItemTemplateBindingCard } from "./work-item-template-binding-card";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
@@ -73,6 +76,7 @@ import {
   executionStateLabel,
   expertSectionFor,
   latestExecutionKind,
+  reviewIntentConfirmationCopy,
   resultPresentation,
   type WorkItemIntentSummary,
 } from "./work-item-summary-model";
@@ -95,235 +99,6 @@ import {
 } from "./work-item-delivery-preview-model";
 
 export { deriveWorkItemUserStatus } from "./work-item-user-status";
-
-function recordBindingStateLabel(state: string, language: string) {
-  const labels: Record<string, [string, string]> = {
-    resolved: ["已就绪", "Ready"],
-    needs_confirmation: ["待确认", "Needs confirmation"],
-    stale: ["资料已变化", "Stale"],
-    unavailable: ["暂不可用", "Unavailable"],
-  };
-  return labels[state]?.[language === "zh" ? 0 : 1] ?? state;
-}
-
-function WorkItemRecordBindings({
-  item,
-  language,
-  locked,
-  pendingId,
-  onRefresh,
-  error,
-}: {
-  item: LocalWorkItem;
-  language: string;
-  locked: boolean;
-  pendingId: string | null;
-  onRefresh: (binding: NonNullable<LocalWorkItem["recordBindings"]>[number]) => void;
-  error: string | null;
-}) {
-  const bindings = item.recordBindings ?? [];
-  if (!bindings.length) return null;
-  return (
-    <section className="rounded-xl border border-border p-4" aria-labelledby={`work-item-records-${item.id}`}>
-      <div className="flex items-start gap-2">
-        <Database className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h4 id={`work-item-records-${item.id}`} className="text-sm font-semibold">{language === "zh" ? "业务资料" : "Business materials"}</h4>
-            <Badge tone="neutral">{bindings.length}</Badge>
-          </div>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            {language === "zh" ? "本任务已限定可使用的业务记录；执行时只读取声明的范围。" : "This task has a bounded set of business records; execution reads only the declared scope."}
-          </p>
-        </div>
-      </div>
-      <div className="mt-3 space-y-2">
-        {bindings.map((binding) => {
-          const record = binding.record;
-          const purpose = binding.direction === "output"
-            ? (language === "zh" ? "结果归档" : "Result archive")
-            : binding.role === "required"
-              ? (language === "zh" ? "必须使用" : "Required")
-              : (language === "zh" ? "可供参考" : "Reference");
-          return (
-            <div key={binding.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/45 px-3 py-2 text-sm">
-              <span className="min-w-[8rem] flex-1 truncate">{record?.title ?? (language === "zh" ? "待生成的业务记录" : "Business record to be created")}</span>
-              {record?.businessKey ? <span className="text-xs text-muted-foreground">{record.businessKey}</span> : null}
-              <Badge tone="neutral">{purpose}</Badge>
-              <Badge tone={binding.resolution.state === "resolved" ? "success" : "warning"}>
-                {recordBindingStateLabel(binding.resolution.state, language)}
-              </Badge>
-              {binding.selection.fieldKeys.length ? <span className="max-w-[16rem] truncate text-xs text-muted-foreground">{binding.selection.fieldKeys.join(", ")}</span> : null}
-              {!locked && ["stale", "needs_confirmation"].includes(binding.resolution.state) ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={pendingId === binding.id}
-                  onClick={() => onRefresh(binding)}
-                >
-                  {pendingId === binding.id ? <RefreshCw className="size-3.5 animate-spin" aria-hidden /> : <RefreshCw className="size-3.5" aria-hidden />}
-                  {language === "zh" ? "刷新并确认" : "Refresh and confirm"}
-                </Button>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-      {locked && bindings.some((binding) => ["stale", "needs_confirmation"].includes(binding.resolution.state)) ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          {language === "zh" ? "任务已开始执行，当前资料快照已固定；如需更换资料，请创建新的任务。" : "Execution has started, so the current material snapshot is fixed. Create a new task to use different material."}
-        </p>
-      ) : null}
-      {error ? <p className="mt-2 text-sm text-destructive" role="alert">{error}</p> : null}
-    </section>
-  );
-}
-
-type LedgerPostingPlanResponse = {
-  plan: NonNullable<LocalWorkItem["ledgerPostingPlan"]>;
-  preview: Record<string, unknown> | null;
-  batchPreview: Record<string, unknown> | null;
-};
-
-function WorkItemLedgerPostingPlan({
-  item,
-  language,
-  canOperate,
-}: {
-  item: LocalWorkItem;
-  language: string;
-  canOperate: boolean;
-}) {
-  const [data, setData] = useState<LedgerPostingPlanResponse | null>(null);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    if (!item.ledgerPostingPlanId) {
-      setData(null);
-      setError(null);
-      return () => { active = false; };
-    }
-    void api.getWorkItemLedgerPostingPlan(item.id)
-      .then((result) => {
-        if (active) setData(result as LedgerPostingPlanResponse);
-      })
-      .catch(() => {
-        if (active) setError(language === "zh" ? "台账变更计划暂时无法加载。" : "The ledger posting plan could not be loaded.");
-      });
-    return () => { active = false; };
-  }, [item.id, item.ledgerPostingPlanId, item.revision, language]);
-
-  if (!item.ledgerPostingPlanId && !error) return null;
-  const plan = data?.plan ?? null;
-  const preview = data?.preview ?? data?.batchPreview;
-  const changedCells = Array.isArray(preview?.changedCells)
-    ? preview.changedCells as Array<{ field?: string; before?: unknown; after?: unknown }>
-    : [];
-  const committed = plan?.status === "committed" || plan?.state === "committed";
-  const invalidated = plan?.status === "invalidated" || plan?.state === "invalidated";
-
-  const refresh = async () => {
-    if (!plan || pending || !canOperate || !invalidated) return;
-    setPending(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const result = await api.prepareWorkItemLedgerPostingPlan(item.id, {
-        expectedRevision: item.revision,
-        primary: plan.primary,
-        related: plan.related,
-      });
-      setData(result as LedgerPostingPlanResponse);
-      setNotice(language === "zh"
-        ? "已按当前任务修订重新检查拟写入内容，请核对新差异后重新审批。"
-        : "The proposed write was checked against the current task revision. Review the fresh diff before approving.");
-      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "task-ledger-posting-refreshed", workItemId: item.id } }));
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      setError(message.includes("revision")
-        ? (language === "zh" ? "任务再次发生变化，请重新加载后生成方案。" : "The task changed again. Reload it before generating a fresh plan.")
-        : (language === "zh" ? "暂时无法重新生成台账方案，请稍后重试。" : "A fresh ledger plan could not be generated. Try again later."));
-    } finally {
-      setPending(false);
-    }
-  };
-
-  const commit = async () => {
-    if (!plan || pending || !canOperate) return;
-    setPending(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const grant = await api.issueApprovalGrant("ledger_posting_plan_commit", plan.id);
-      const result = await api.commitWorkItemLedgerPostingPlan(item.id, {
-        planId: plan.id,
-        expectedRevision: item.revision,
-        approvalToken: grant.token,
-      });
-      setData((current) => current ? { ...current, plan: result.plan } : current);
-      setNotice(language === "zh" ? "台账已写入，变更已记录。" : "The ledger was updated and the change was recorded.");
-      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "task-ledger-posting-committed", workItemId: item.id } }));
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      const stale = message.includes("stale") || message.includes("revision");
-      if (stale) {
-        try {
-          const latest = await api.getWorkItemLedgerPostingPlan(item.id);
-          setData(latest as LedgerPostingPlanResponse);
-        } catch { /* keep the current preview and recovery message */ }
-      }
-      setError(stale
-        ? (language === "zh" ? "任务或资料已变化，旧审批已失效。请重新生成方案。" : "The task or materials changed, so the old approval is no longer valid. Generate a fresh plan.")
-        : (language === "zh" ? "台账写入未完成，请检查最新状态后重新审批。" : "The ledger was not updated. Check the latest state before approving again."));
-    } finally {
-      setPending(false);
-    }
-  };
-
-  return (
-    <section className="rounded-xl border border-warning/40 bg-warning/[0.04] p-4" aria-labelledby={`work-item-ledger-plan-${item.id}`}>
-      <div className="flex items-start gap-2">
-        <Database className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
-        <div className="min-w-0 flex-1">
-          <h4 id={`work-item-ledger-plan-${item.id}`} className="text-sm font-semibold">{language === "zh" ? "台账变更审批" : "Ledger change approval"}</h4>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            {committed
-              ? (language === "zh" ? "这项变更已经写入本地台账。" : "This change has been written to the local ledger.")
-              : invalidated
-                ? (language === "zh" ? "任务或资料已变化，旧方案和审批已失效。请基于当前资料重新生成。" : "The task or materials changed, so the old plan and approval are no longer valid. Generate a fresh plan from the current data.")
-              : (language === "zh" ? "请先检查变更预览，再批准写入本地台账。" : "Review the change preview before approving the local ledger write.")}
-          </p>
-        </div>
-        {plan ? <Badge tone={committed ? "success" : "warning"}>{committed ? (language === "zh" ? "已完成" : "Committed") : invalidated ? (language === "zh" ? "需刷新" : "Refresh required") : (language === "zh" ? "待审批" : "Pending approval")}</Badge> : null}
-      </div>
-      {!invalidated && changedCells.length ? (
-        <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-background">
-          <table className="w-full text-left text-xs">
-            <thead className="border-b border-border text-muted-foreground"><tr><th className="px-3 py-2">{language === "zh" ? "字段" : "Field"}</th><th className="px-3 py-2">{language === "zh" ? "之前" : "Before"}</th><th className="px-3 py-2">{language === "zh" ? "之后" : "After"}</th></tr></thead>
-            <tbody>{changedCells.slice(0, 50).map((cell, index) => <tr key={`${cell.field ?? "field"}-${index}`} className="border-b border-border last:border-0"><td className="px-3 py-2 font-medium">{cell.field ?? "—"}</td><td className="px-3 py-2">{String(cell.before ?? "—")}</td><td className="px-3 py-2">{String(cell.after ?? "—")}</td></tr>)}</tbody>
-          </table>
-        </div>
-      ) : null}
-      {!committed && plan && canOperate ? (
-        <div className="mt-3 flex justify-end">
-          {invalidated ? (
-            <Button size="sm" disabled={pending} onClick={() => void refresh()}>
-              <RefreshCw className={pending ? "animate-spin" : undefined} aria-hidden />
-              {pending ? (language === "zh" ? "重新生成中…" : "Generating…") : (language === "zh" ? "刷新方案并重新审批" : "Refresh plan and review again")}
-            </Button>
-          ) : (
-            <Button size="sm" disabled={pending} onClick={() => void commit()}><CheckCircle2 aria-hidden />{pending ? (language === "zh" ? "审批并写入中…" : "Approving and writing…") : (language === "zh" ? "审批并写入台账" : "Approve and write ledger")}</Button>
-          )}
-        </div>
-      ) : null}
-      {notice ? <p className="mt-2 text-sm text-success" role="status">{notice}</p> : null}
-      {error ? <p className="mt-2 text-sm text-destructive" role="alert">{error}</p> : null}
-    </section>
-  );
-}
 
 type MyTemplateDraftPreview = {
   eligible: boolean;
@@ -674,6 +449,7 @@ export function WorkItemSummaryView({
   const hasManagedExecution = Boolean(executionKind) || Boolean(item.executionState && item.executionState !== "unclaimed");
   const startReceipt = item.executionStartReceipt ?? null;
   const executionReview = observability?.executionReview ?? null;
+  const reviewIntent = executionReview?.reviewIntent ?? null;
   const effectiveExecutionActionReceipt = executionReview?.actionReceipt ?? executionActionReceipt;
   const showExecutionReview = Boolean(executionReview?.targetId && executionReview.state !== "queued");
   const executionReviewOwnsProgress = showExecutionReview;
@@ -704,8 +480,6 @@ export function WorkItemSummaryView({
       : 0;
   const startEligible = ["not_started", "scheduled"].includes(status) && !hasBoundAutoRun && !observability?.latestRun && !startRequestActive;
   const canCorrectMyTemplate = Boolean(item.myTemplateBinding && startEligible && canOperate);
-  const learnedTemplateMatch = Boolean(item.myTemplateBinding?.matchReasons.some((reason) =>
-    /纠正|corrected|correction/i.test(reason)));
   const materialExecutionBlocked = (item.recordBindings ?? []).some((binding) =>
     ["stale", "needs_confirmation", "unavailable"].includes(binding.resolution.state));
   const canStartAi = startEligible && readiness?.ready === true && !materialExecutionBlocked;
@@ -780,7 +554,6 @@ export function WorkItemSummaryView({
   const deliveryEvidence: LocalWorkItemDeliveryEvidence | null = observability?.deliveryEvidence
     ?? observability?.delivery?.evidence
     ?? null;
-  const deliveryEvidenceNotReady = Boolean(deliveryEvidence && !deliveryEvidence.actionPreview.canProceed);
   const reviewFindings = deliveryEvidence?.review.findings?.length
     ? deliveryEvidence.review.findings.map((finding) => ({
       path: finding.file,
@@ -866,6 +639,8 @@ export function WorkItemSummaryView({
     reviewFindings,
     reviewSummary: deliveryEvidence?.review.summary ?? deliveryReview?.summary ?? deliveryAiReview?.summary ?? null,
     evidenceStatus: deliveryEvidence?.status ?? null,
+    evidenceRisk: deliveryEvidence?.risk ?? null,
+    evidenceDomain: deliveryEvidence?.domain ?? null,
     verification: deliveryEvidence?.verification.status
       ? { passed: deliveryEvidence.verification.passed === true, verified: deliveryEvidence.verification.verified, summary: deliveryEvidence.verification.summary }
       : resultVerification,
@@ -874,26 +649,32 @@ export function WorkItemSummaryView({
     taskText: `${item.title}\n${item.body}`,
     resultFiles,
   });
-  const intentSummary = deriveWorkItemIntentSummary({ item, domain: deliveryDecision.domain, language, completed: status === "completed" });
+  const deliveryEvidenceNotReady = Boolean(deliveryEvidence
+    && (!deliveryEvidence.actionPreview.canProceed || deliveryDecision.state !== "ready" || deliveryDecision.risk !== "low"));
+  const intentSummary = deriveWorkItemIntentSummary({ item, domain: deliveryDecision.domain, language, completed: status === "completed", reviewIntent });
   const deliveryMode = observability?.delivery?.mode ?? null;
   const officeDelivery = deliveryDecision.domain === "office";
   const deliveryOperation = deliveryEvidence?.actionPreview.operation ?? null;
   const deliveryBlockedReasonCodes = deliveryEvidence?.actionPreview.blockedReasonCodes ?? [];
-  const confirmResultWithoutDelivery = deliveryEvidence?.status === "ready"
-    && deliveryBlockedReasonCodes.length === 1
-    && deliveryBlockedReasonCodes[0] === "delivery_action_forbidden_by_intent";
-  const confirmActionEffect = confirmResultWithoutDelivery
+  const confirmResultWithoutDelivery = reviewIntent?.source === "frozen_execution_contract"
+    ? reviewIntent.confirmation.resultOnly
+    : deliveryDecision.state === "ready"
+      && deliveryDecision.risk === "low"
+      && deliveryEvidence?.status === "ready"
+      && deliveryBlockedReasonCodes.length === 1
+      && deliveryBlockedReasonCodes[0] === "delivery_action_forbidden_by_intent";
+  const legacyConfirmActionEffect = confirmResultWithoutDelivery
     ? language === "zh"
       ? "只记录你已确认结果并完成任务；变更继续保留在当前未提交工作树中，不会写入基础分支、创建提交、创建 PR 或推送远程。"
       : "Only record your result confirmation and complete the task. The change remains in the current uncommitted worktree and is not applied, committed, opened as a pull request, or pushed."
     : deliveryDecision.confirmEffect;
-  const confirmActionRisk = confirmResultWithoutDelivery
+  const legacyConfirmActionRisk = confirmResultWithoutDelivery
     ? language === "zh"
       ? "较低：不会修改基础分支或外部系统；请确认你接受由当前未提交工作树继续保管结果。"
       : "Low: the base branch and external systems are unchanged. Confirm that the current uncommitted worktree should continue to hold the result."
     : deliveryDecision.confirmRisk;
   const updatesPullRequest = deliveryOperation === "update_pull_request";
-  const acceptActionLabel = confirmResultWithoutDelivery
+  const legacyAcceptActionLabel = confirmResultWithoutDelivery
     ? language === "zh" ? "确认结果并完成任务（不应用）" : "Approve result and complete without applying"
     : deliveryMode === "pull_request"
     ? updatesPullRequest
@@ -931,7 +712,7 @@ export function WorkItemSummaryView({
       && (["failed", "blocked"].includes(deliveryRun.status)
         || ["done", "report_posted", "plan_proposed", "pr_open"].includes(deliveryRun.status)),
   );
-  const acceptDialogTitle = confirmResultWithoutDelivery
+  const legacyAcceptDialogTitle = confirmResultWithoutDelivery
     ? language === "zh" ? "确认结果并完成任务？" : "Approve the result and complete the task?"
     : deliveryMode === "pull_request"
     ? updatesPullRequest
@@ -942,7 +723,7 @@ export function WorkItemSummaryView({
     : deliveryMode === "local_merge"
       ? language === "zh" ? "确认审核通过并应用到本地？" : "Approve and apply this delivery locally?"
       : copy.acceptTitle;
-  const acceptDialogDescription = confirmResultWithoutDelivery
+  const legacyAcceptDialogDescription = confirmResultWithoutDelivery
     ? language === "zh"
       ? "系统只会记录你已确认结果并完成任务；变更继续保留在未提交工作树中，不会应用到主分支、创建提交、创建 PR 或推送远程。"
       : "Only your result confirmation and task completion will be recorded. The change remains in the uncommitted worktree and will not be applied, committed, opened as a pull request, or pushed."
@@ -963,7 +744,7 @@ export function WorkItemSummaryView({
         ? "系统会把已审核的 Worktree 改动应用到本地基准分支并完成任务；不会推送或合并任何远端分支。"
         : "The reviewed worktree changes will be applied to the local base branch and the task will be completed. No remote branch will be pushed or merged."
       : copy.acceptDescription;
-  const acceptDialogConfirm = confirmResultWithoutDelivery
+  const legacyAcceptDialogConfirm = confirmResultWithoutDelivery
     ? language === "zh" ? "确认完成，不应用" : "Complete without applying"
     : deliveryMode === "pull_request"
     ? updatesPullRequest
@@ -974,6 +755,24 @@ export function WorkItemSummaryView({
     : deliveryMode === "local_merge"
       ? language === "zh" ? "确认应用到本地" : "Apply locally"
       : copy.acceptConfirm;
+  const reviewConfirmation = reviewIntentConfirmationCopy({
+    reviewIntent,
+    language,
+    fallback: {
+      actionLabel: legacyAcceptActionLabel,
+      dialogTitle: legacyAcceptDialogTitle,
+      dialogDescription: legacyAcceptDialogDescription,
+      dialogConfirm: legacyAcceptDialogConfirm,
+      effect: legacyConfirmActionEffect,
+      risk: legacyConfirmActionRisk,
+    },
+  });
+  const acceptActionLabel = reviewConfirmation.actionLabel;
+  const acceptDialogTitle = reviewConfirmation.dialogTitle;
+  const acceptDialogDescription = reviewConfirmation.dialogDescription;
+  const acceptDialogConfirm = reviewConfirmation.dialogConfirm;
+  const confirmActionEffect = reviewConfirmation.effect;
+  const confirmActionRisk = reviewConfirmation.risk;
   const reviewFeedback = reviewFindings.map((finding) => [
     `${finding.severity ? `[${finding.severity}] ` : ""}${finding.path ?? "Code"}${finding.line ? `:${finding.line}` : ""}: ${finding.body}`,
     finding.suggestion ? `Suggested fix: ${finding.suggestion}` : null,
@@ -1415,6 +1214,47 @@ export function WorkItemSummaryView({
         setRefreshVersion((version) => version + 1);
       }
       throw caught;
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const resolveIntentClarification = async (option: ExecutionStartClarificationOption) => {
+    const clarification = startSummary.clarification;
+    if (!clarification) return;
+    if (option.applyMode === "manual") {
+      setStartConfirmationOpen(false);
+      if (clarification.resolution === "task_context") {
+        window.requestAnimationFrame(() => document.querySelector('[data-testid="work-item-context-card"]')?.scrollIntoView?.({ behavior: "smooth", block: "center" }));
+      } else {
+        onOpenExpert("overview");
+      }
+      return;
+    }
+    if (actionPending || !canCorrectTaskContext || !item.intentContract?.digest) return;
+    setActionPending("context");
+    setActionError(null);
+    try {
+      const response = await api.updateWorkItemTaskContext(item.id, {
+        expectedRevision: item.revision,
+        intentResolution: {
+          idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `intent-resolution-${item.id}-${Date.now()}`,
+          expectedIntentDigest: item.intentContract.digest,
+          conflictCode: clarification.code,
+          choiceId: option.id,
+        },
+      }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setSyncNotice(language === "zh"
+        ? "已按你的选择更新任务理解，请复核后再开始。"
+        : "Task intent updated from your choice. Review it before starting.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-intent-clarification", workItemId: item.id } }));
+    } catch (caught) {
+      if (caught instanceof ApiError && ["work_item_revision_conflict", "work_item_intent_clarification_stale", "work_item_intent_clarification_changed"].includes(caught.code)) {
+        setRefreshVersion((version) => version + 1);
+        setActionError(language === "zh" ? "任务内容已变化，已刷新最新理解，请重新选择。" : "The task changed. The latest intent is being refreshed; choose again.");
+      } else {
+        setActionError(language === "zh" ? "未能应用这个选择，请重试。" : "This choice could not be applied. Try again.");
+      }
     } finally {
       setActionPending(null);
     }
@@ -2017,185 +1857,9 @@ export function WorkItemSummaryView({
         </div>
       ) : null}
 
-      {item.channelTaskContract?.dataPlan && item.channelTaskContract.dataPlan.status !== "not_required" ? (
-        <section
-          className={`rounded-xl border p-4 ${item.channelTaskContract.dataPlan.status === "ready" ? "border-success/30 bg-success/[0.04]" : "border-warning/35 bg-warning/[0.05]"}`}
-          aria-label={language === "zh" ? "资料检查结果" : "Source check results"}
-        >
-          <h4 className="text-sm font-semibold">{language === "zh" ? "资料检查结果" : "Source check results"}</h4>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {item.channelTaskContract.dataPlan.status === "ready"
-              ? (language === "zh" ? "以下资料会用于本次处理，开始前还会再次检查。" : "These sources will be used for this task and checked again before starting.")
-              : (language === "zh" ? "还缺少部分资料，补齐或选择来源后才能继续。" : "Some sources are still missing. Add or choose them before continuing.")}
-          </p>
-          {item.channelTaskContract.dataPlan.sources.length ? (
-            <ul className="mt-3 space-y-1 text-xs">
-              {item.channelTaskContract.dataPlan.sources.map((source) => (
-                <li key={source.sourceId}>
-                  <span className="font-medium">{source.fileName ?? source.sourceId}</span>
-                  {source.revision != null ? <span className="ml-1 text-muted-foreground">· v{source.revision}</span> : null}
-                  {source.rowCount != null ? <span className="ml-1 text-muted-foreground">· {source.rowCount} rows</span> : null}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {item.channelTaskContract.dataPlan.requirements.filter((requirement) => requirement.state !== "ready").map((requirement) => (
-            <p key={requirement.id} className="mt-2 text-xs text-warning-foreground">
-              {language === "zh" ? "还需要：" : "Needed: "}{requirement.label}{requirement.state === "ambiguous" ? (language === "zh" ? "（来源不唯一）" : " (multiple sources)") : ""}
-            </p>
-          ))}
-          {item.channelTaskContract.dataPlan.relations.length ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {language === "zh" ? "资料对应关系：" : "Source relationships: "}
-              {item.channelTaskContract.dataPlan.relations.map((relation) => `${relation.fromRequirementId}.${relation.fromField} → ${relation.toRequirementId}.${relation.toField}`).join("；")}
-            </p>
-          ) : null}
-          {item.channelTaskContract.dataRelationPreview?.relations.length ? (
-            <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-              {item.channelTaskContract.dataRelationPreview.relations.map((relation) => (
-                <li key={relation.id}>
-                  {relation.fromRequirementId}.{relation.fromField} → {relation.toRequirementId}.{relation.toField}：
-                  {relation.state === "ready"
-                    ? (language === "zh" ? `已对应 ${relation.matchedRows} 条` : `${relation.matchedRows} matched`)
-                    : (language === "zh" ? `还需确认，${relation.unmatchedRows} 条未对应` : `review needed, ${relation.unmatchedRows} unmatched`)}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {item.channelTaskContract.dataRelationConfirmation ? (
-            <div className="mt-3 rounded-lg border border-success/25 bg-success/[0.04] p-3 text-xs">
-              <p className="font-medium text-success-foreground">
-                {item.channelTaskContract.dataRelationConfirmation.status === "verified"
-                  ? (language === "zh" ? "资料对应关系已检查并记录" : "Source relationships checked and recorded")
-                  : (language === "zh" ? "资料对应关系检查状态：" : "Source relationship check: ") + item.channelTaskContract.dataRelationConfirmation.status}
-              </p>
-              <p className="mt-1 text-muted-foreground">
-                {item.channelTaskContract.dataRelationConfirmation.confirmationMode === "user_confirmation"
-                  ? (language === "zh" ? "由本次确认完成检查" : "Checked by this confirmation")
-                  : (language === "zh" ? "由系统在开始前完成检查" : "Checked by the system before starting")}
-                {item.channelTaskContract.dataRelationConfirmation.objectSnapshotCount > 0
-                  ? (language === "zh"
-                    ? ` · 已记录 ${item.channelTaskContract.dataRelationConfirmation.objectSnapshotCount} 个对象版本`
-                    : ` · ${item.channelTaskContract.dataRelationConfirmation.objectSnapshotCount} object versions recorded`)
-                  : ""}
-              </p>
-            </div>
-          ) : null}
-        </section>
-      ) : null}
+      {item.channelTaskContract ? <WorkItemChannelDataPlan contract={item.channelTaskContract} language={language} /> : null}
 
-      {item.channelTaskContract?.dataMutationPreview && item.channelTaskContract.dataMutationPreview.status !== "not_required" ? (
-        <section
-          className="rounded-xl border border-warning/35 bg-warning/[0.05] p-4"
-          aria-label={language === "zh"
-            ? (item.channelTaskContract.ledgerMutationPreview?.kind === "batch" ? "批量文件修改预览" : item.channelTaskContract.ledgerMutationPreview ? "单条文件修改预览" : "文件修改预览")
-            : (item.channelTaskContract.ledgerMutationPreview ? "Single-record file change preview" : "File change preview")}
-        >
-          <h4 className="text-sm font-semibold">
-            {language === "zh"
-              ? (item.channelTaskContract.ledgerMutationPreview?.kind === "batch" ? "批量文件修改预览" : item.channelTaskContract.ledgerMutationPreview ? "单条文件修改预览" : "文件修改预览")
-              : (item.channelTaskContract.ledgerMutationPreview ? "Single-record file change preview" : "File change preview")}
-          </h4>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {item.channelTaskContract.ledgerMutationPreview
-              ? (language === "zh"
-                ? (item.channelTaskContract.ledgerMutationPreview.kind === "batch"
-                  ? "已生成批量文件修改预览；回复“确认执行”后按文件顺序处理，部分失败会保留可恢复记录。"
-                  : "已生成文件修改预览；回复“确认执行”后才会修改，桌面端会保留处理记录。")
-                : "A file change preview is ready. Personal Channel confirmation is required before changes are applied.")
-              : (language === "zh"
-                ? item.channelTaskContract.dataMutationPreview.status === "ready"
-                  ? "修改范围预览已生成，但还不会直接修改原文件。"
-                  : "目前只整理了修改范围，还需要明确文件、记录范围和修改内容。"
-                : item.channelTaskContract.dataMutationPreview.status === "ready"
-                  ? "The change scope is previewed, but source files will not be modified yet."
-                  : "Only the change scope is recorded. Confirm the files, rows, and changes before continuing.")}
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {item.channelTaskContract.dataMutationBinding
-              ? (language === "zh"
-                ? "文件保护设置已准备好"
-                : "File protection is ready")
-              : (language === "zh" ? "还需要检查文件保护设置" : "File protection still needs checking")}
-          </p>
-          {item.channelTaskContract.dataMutationPreview.targetSources.length ? (
-            <ul className="mt-3 space-y-1 text-xs">
-              {item.channelTaskContract.dataMutationPreview.targetSources.map((source) => (
-                <li key={source.sourceId}>
-                  <span className="font-medium">{source.fileName ?? source.sourceId}</span>
-                  {source.revision != null ? <span className="ml-1 text-muted-foreground">· v{source.revision}</span> : null}
-                  {source.rowCount != null ? <span className="ml-1 text-muted-foreground">· {source.rowCount} rows</span> : null}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {item.channelTaskContract.dataMutationPreview.dataMutationScope ? (
-            <div className="mt-3 rounded-lg border border-warning/25 bg-background/40 p-3 text-xs">
-              <p className="font-medium">
-                {language === "zh" ? "修改范围已固定" : "Change scope fixed"}
-                <span className="ml-2 text-muted-foreground">
-                  {language === "zh"
-                    ? `${item.channelTaskContract.dataMutationPreview.dataMutationScope.targets.length} 个文件 · 预计 ${item.channelTaskContract.dataMutationPreview.dataMutationScope.expectedAffectedRows} 条`
-                    : `${item.channelTaskContract.dataMutationPreview.dataMutationScope.targets.length} files · ${item.channelTaskContract.dataMutationPreview.dataMutationScope.expectedAffectedRows} rows`}
-                </span>
-              </p>
-              <p className="mt-1 text-muted-foreground">
-                {language === "zh" ? "系统只保留必要的处理记录，不保存原始筛选内容。" : "Only necessary processing records are kept; raw filters are not persisted."}
-              </p>
-              {item.channelTaskContract.dataMutationPreview.dataMutationScope.changes.length ? (
-                <p className="mt-1 text-muted-foreground">
-                  {language === "zh" ? "字段：" : "Fields: "}
-                  {item.channelTaskContract.dataMutationPreview.dataMutationScope.changes.map((change) => change.field).join("、")}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-          {item.channelTaskContract.ledgerMutationPreview ? (
-            <div className="mt-3 rounded-lg border border-success/25 bg-success/[0.04] p-3 text-xs">
-              <p className="font-medium text-success-foreground">
-                {item.channelTaskContract.ledgerMutationPreview.state === "rolled_back"
-                  ? (language === "zh" ? "修改已安全撤回" : "Changes rolled back safely")
-                  : item.channelTaskContract.ledgerMutationPreview.state === "needs_attention"
-                    ? (language === "zh" ? "需要检查文件" : "File needs attention")
-                    : item.channelTaskContract.ledgerMutationPreview.state === "committing"
-                      ? (language === "zh" ? "正在恢复修改进度" : "Recovering change progress")
-                      : (language === "zh" ? "文件修改预览已生成" : "File change preview ready")}
-                <span className="ml-2 text-muted-foreground">
-                  {item.channelTaskContract.ledgerMutationPreview.state === "waiting"
-                    ? (language === "zh" ? "排队等待处理" : "queued behind another change")
-                    : item.channelTaskContract.ledgerMutationPreview.state === "rolled_back"
-                      ? (language === "zh" ? "未保留任何部分修改" : "no partial changes kept")
-                      : item.channelTaskContract.ledgerMutationPreview.state === "needs_attention"
-                        ? (language === "zh" ? "检测到文件被其他程序修改" : "file changed elsewhere")
-                        : item.channelTaskContract.ledgerMutationPreview.state === "committing"
-                          ? (language === "zh" ? "已完成项不会重复修改" : "completed items will not repeat")
-                    : (language === "zh" ? "等待 Channel 确认" : "awaiting Channel confirmation")}
-                </span>
-              </p>
-              <p className="mt-1 text-muted-foreground">
-                {item.channelTaskContract.ledgerMutationPreview.kind === "batch"
-                  ? `${language === "zh" ? "涉及：" : "Scope: "}${item.channelTaskContract.ledgerMutationPreview.targetCount ?? 0} ${language === "zh" ? "个文件，" : "files, "}${item.channelTaskContract.ledgerMutationPreview.operationCount ?? item.channelTaskContract.ledgerMutationPreview.children?.length ?? 0} ${language === "zh" ? "条记录" : "operations"}`
-                  : item.channelTaskContract.ledgerMutationPreview.changedCells.length
-                    ? `${language === "zh" ? "字段：" : "Fields: "}${item.channelTaskContract.ledgerMutationPreview.changedCells.map((cell) => cell.field).filter(Boolean).join("、")}`
-                    : (language === "zh" ? "没有检测到实际字段变化" : "No field difference detected")}
-                {item.channelTaskContract.ledgerMutationPreview.kind !== "batch" && item.channelTaskContract.ledgerMutationPreview.rowNumber != null
-                  ? ` · ${language === "zh" ? "第" : "row "}${item.channelTaskContract.ledgerMutationPreview.rowNumber}${language === "zh" ? "行" : ""}`
-                  : ""}
-              </p>
-              {item.channelTaskContract.ledgerMutationPreview.kind === "batch" && item.channelTaskContract.ledgerMutationPreview.journal ? (
-                <p className="mt-1 text-muted-foreground">
-                  {language === "zh"
-                    ? `处理记录：已完成 ${item.channelTaskContract.ledgerMutationPreview.journal.appliedCount} 项、保留 ${item.channelTaskContract.ledgerMutationPreview.journal.snapshotCount} 个文件备份`
-                    : `Processing record: ${item.channelTaskContract.ledgerMutationPreview.journal.appliedCount} completed, ${item.channelTaskContract.ledgerMutationPreview.journal.snapshotCount} file backups`}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-          {item.channelTaskContract.dataMutationPreview.requiredFields.map((field) => (
-            <p key={field} className="mt-2 text-xs text-warning-foreground">{language === "zh" ? "还需要：" : "Needed: "}{field}</p>
-          ))}
-        </section>
-      ) : null}
+      {item.channelTaskContract ? <WorkItemChannelMutationPreview contract={item.channelTaskContract} language={language} /> : null}
 
       {pendingTemplateClarification ? (
         <section id="task-template-result-question" className="rounded-xl border border-warning/40 bg-warning/[0.06] p-4" aria-label={language === "zh" ? "这次你希望最终得到什么？" : "What result do you want this time?"}>
@@ -2352,89 +2016,19 @@ export function WorkItemSummaryView({
       </div>
 
       {item.myTemplateBinding ? (
-        <section
-          className="rounded-xl border border-primary/30 bg-primary/[0.035] p-4"
-          aria-labelledby={`work-item-template-${item.id}`}
-          data-testid="work-item-template-binding"
-        >
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <Bot className="size-4 text-primary" aria-hidden />
-                <h4 id={`work-item-template-${item.id}`} className="text-sm font-semibold">
-                  {language === "zh" ? "这次会怎样得到结果" : "How this task will produce its result"}
-                </h4>
-                <Badge tone="success">{learnedTemplateMatch
-                  ? (language === "zh" ? "参考了你的纠正" : "Learned from your correction")
-                  : (language === "zh" ? "已按结果自动采用" : "Selected from the result")}</Badge>
-              </div>
-              <p className="mt-2 text-sm font-medium">
-                {language === "zh" ? "预计得到：" : "Expected result: "}{item.myTemplateBinding.expectedOutput}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {language === "zh" ? "处理依据：参考了你之前确认过的做法" : "Basis: a previously confirmed approach"}
-              </p>
-            </div>
-            {canCorrectMyTemplate && !templateCorrectionOpen ? (
-              <Button size="sm" variant="ghost" disabled={templateCorrectionPending} onClick={() => { void openTemplateCorrection(); }}>
-                {language === "zh" ? "结果不对" : "Wrong result"}
-              </Button>
-            ) : null}
-          </div>
-          {learnedTemplateMatch ? (
-            <p className="mt-3 rounded-lg border border-primary/20 bg-background/70 p-2.5 text-xs leading-relaxed text-muted-foreground">
-              {language === "zh"
-                ? "系统发现这项任务与之前由你纠正过的任务相似，因此优先采用这个结果。你可以在设置中查看或撤销系统记住的选择。"
-                : "This task looks similar to one you corrected before, so that result was preferred. You can review or remove the remembered choice in settings."}
-            </p>
-          ) : null}
-          {item.myTemplateBinding.matchReasons.length ? (
-            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-              {language === "zh" ? "使用原因：" : "Why it was used: "}
-              {item.myTemplateBinding.matchReasons.join(language === "zh" ? "；" : "; ")}
-            </p>
-          ) : null}
-          {templateCorrectionOpen ? (
-            <section className="mt-3 rounded-lg border border-warning/35 bg-background/80 p-3" aria-label={language === "zh" ? "纠正处理结果" : "Correct the result"}>
-              <h5 className="text-sm font-semibold">{language === "zh" ? "这次实际想得到什么？" : "What do you actually want this time?"}</h5>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {language === "zh" ? "选择结果即可。只会调整尚未开始的当前任务，并帮助以后判断相似任务。" : "Choose the result only. This changes only the unstarted task and helps with similar tasks later."}
-              </p>
-              {templateCorrectionPending && !templateCorrectionOptions.length ? (
-                <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground"><RefreshCw className="size-4 animate-spin" aria-hidden />{language === "zh" ? "正在查找可用结果…" : "Finding available results…"}</p>
-              ) : templateCorrectionOptions.length ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {templateCorrectionOptions.map((definition) => (
-                    <Button key={definition.id} size="sm" variant="secondary" disabled={templateCorrectionPending} onClick={() => { void correctTemplateResult(definition); }}>
-                      {myTemplateExpectedOutput(definition)}
-                    </Button>
-                  ))}
-                </div>
-              ) : !templateCorrectionError ? (
-                <p className="mt-3 text-sm text-muted-foreground">{language === "zh" ? "还没有其他可用结果，可以先到“我的模板”继续完善。" : "No other result is available yet. Add one in My templates first."}</p>
-              ) : null}
-              {templateCorrectionError ? <p className="mt-3 text-sm text-destructive" role="alert">{templateCorrectionError}</p> : null}
-              <Button className="mt-3" size="sm" variant="ghost" disabled={templateCorrectionPending} onClick={() => { setTemplateCorrectionOpen(false); setTemplateCorrectionError(null); }}>
-                {language === "zh" ? "取消" : "Cancel"}
-              </Button>
-            </section>
-          ) : null}
-          {item.myTemplateBinding.snapshot.steps.length ? (
-            <details className="mt-3 rounded-lg border border-border/80 bg-background/70 px-3 py-2">
-              <summary className="cursor-pointer text-sm font-medium">
-                {language === "zh" ? "查看处理步骤" : "View processing steps"}
-              </summary>
-              <ol className="mt-2 space-y-1.5 text-sm text-muted-foreground">
-                {item.myTemplateBinding.snapshot.steps.map((step, index) => (
-                  <li key={step.key} className="flex gap-2">
-                    <span className="text-primary">{index + 1}.</span>
-                    <span>{step.label}</span>
-                  </li>
-                ))}
-              </ol>
-            </details>
-          ) : null}
-        </section>
+        <WorkItemTemplateBindingCard
+          workItemId={item.id}
+          binding={item.myTemplateBinding}
+          language={language}
+          canCorrect={canCorrectMyTemplate}
+          correctionOpen={templateCorrectionOpen}
+          correctionOptions={templateCorrectionOptions}
+          correctionPending={templateCorrectionPending}
+          correctionError={templateCorrectionError}
+          onOpenCorrection={() => { void openTemplateCorrection(); }}
+          onCorrect={(definition) => { void correctTemplateResult(definition); }}
+          onCancelCorrection={() => { setTemplateCorrectionOpen(false); setTemplateCorrectionError(null); }}
+        />
       ) : null}
 
       <section className="rounded-xl border border-border p-4" aria-labelledby={`work-item-materials-${item.id}`}>
@@ -2649,7 +2243,7 @@ export function WorkItemSummaryView({
         open={startConfirmationOpen}
         summary={startSummary}
         language={language}
-        pending={actionPending === "start"}
+        pending={actionPending === "start" || actionPending === "context"}
         canConfirm={canStartAi && executionPlanPrepared && !contextHasBlockingIssues}
         error={startConfirmationOpen ? actionError : null}
         blockedActionLabel={materialExecutionBlocked
@@ -2673,7 +2267,8 @@ export function WorkItemSummaryView({
           if (onOpenSetup) onOpenSetup(readinessSetupSection(readiness));
           else onOpenExpert("process");
         } : undefined}
-        onClose={() => { if (actionPending !== "start") setStartConfirmationOpen(false); }}
+        onClarificationChoice={(option) => { void resolveIntentClarification(option); }}
+        onClose={() => { if (actionPending !== "start" && actionPending !== "context") setStartConfirmationOpen(false); }}
         onConfirm={() => { void startAiWork(); }}
         returnFocusRef={startActionRef}
       />
@@ -2865,6 +2460,17 @@ export function WorkItemSummaryView({
         closeDisabled={actionPending === "complete"}
       >
         <div className="space-y-3">
+          {reviewIntent?.source === "frozen_execution_contract" ? (
+            <section className="rounded-lg border border-primary/25 bg-primary/[0.04] p-3 text-sm" data-testid="accept-review-intent">
+              <p className="font-semibold">{language === "zh" ? "本次确认依据" : "Confirmation basis for this run"}</p>
+              <dl className="mt-2 grid gap-1 text-xs">
+                <div><dt className="inline text-muted-foreground">{language === "zh" ? "目标：" : "Goal: "}</dt><dd className="inline">{reviewIntent.goal ?? (language === "zh" ? "未记录" : "Unavailable")}</dd></div>
+                <div><dt className="inline text-muted-foreground">{language === "zh" ? "预期结果：" : "Expected result: "}</dt><dd className="inline">{reviewIntent.expectedOutput ?? (language === "zh" ? "未记录" : "Unavailable")}</dd></div>
+                <div><dt className="inline text-muted-foreground">{language === "zh" ? "确认效果：" : "Effect: "}</dt><dd className="inline">{confirmActionEffect}</dd></div>
+                <div><dt className="inline text-muted-foreground">{language === "zh" ? "风险：" : "Risk: "}</dt><dd className="inline">{confirmActionRisk}</dd></div>
+              </dl>
+            </section>
+          ) : null}
           {primaryExternalBinding ? (
             <fieldset className="space-y-2">
               <legend className="text-sm font-semibold">{copy.writebackTitle}</legend>
@@ -3022,7 +2628,7 @@ function WorkItemIntentCard({
   const tone = summary.state === "aligned" ? "success" : summary.state === "needs_confirmation" ? "warning" : "neutral";
   return (
     <section
-      className={`rounded-xl border p-4 ${summary.state === "needs_confirmation" ? "border-warning/35 bg-warning/[0.055]" : "border-primary/25 bg-primary/[0.035]"}`}
+      className={`min-w-0 rounded-xl border p-4 [overflow-wrap:anywhere] ${summary.state === "needs_confirmation" ? "border-warning/35 bg-warning/[0.055]" : "border-primary/25 bg-primary/[0.035]"}`}
       aria-label={language === "zh" ? "AI 对任务的理解" : "AI understanding of the task"}
       data-testid="work-item-intent-summary"
     >

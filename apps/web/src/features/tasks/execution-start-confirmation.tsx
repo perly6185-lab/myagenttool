@@ -3,7 +3,22 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import type { ReactNode, RefObject } from "react";
-import type { ExecutionStartSummary } from "./execution-start-summary";
+import type { ExecutionStartClarificationOption, ExecutionStartSummary } from "./execution-start-summary";
+
+function clarificationTargetLabel(target: string, zh: boolean) {
+  const labels: Record<string, [string, string]> = {
+    "action.accessMode": ["操作权限", "Action permission"],
+    "action.operation": ["动作类型", "Operation type"],
+    "action.forbiddenActions": ["禁止动作", "Prohibited actions"],
+    "materials.roles": ["资料用途与权限", "Material roles and access"],
+    "delivery.destination": ["结果去向", "Delivery destination"],
+    "delivery.platform": ["目标平台", "Target platform"],
+    "method.selection": ["处理方法", "Method selection"],
+    expectedOutput: ["预期结果", "Expected output"],
+    "task.definition": ["任务定义", "Task definition"],
+  };
+  return labels[target]?.[zh ? 0 : 1] ?? target;
+}
 
 export function ExecutionStartConfirmation({
   open,
@@ -14,6 +29,7 @@ export function ExecutionStartConfirmation({
   error,
   blockedActionLabel,
   onResolveBlocked,
+  onClarificationChoice,
   onConfirm,
   onClose,
   returnFocusRef,
@@ -26,6 +42,7 @@ export function ExecutionStartConfirmation({
   error: string | null;
   blockedActionLabel?: string;
   onResolveBlocked?: () => void;
+  onClarificationChoice?: (option: ExecutionStartClarificationOption) => void;
   onConfirm: () => void;
   onClose: () => void;
   returnFocusRef: RefObject<HTMLButtonElement | null>;
@@ -86,6 +103,45 @@ export function ExecutionStartConfirmation({
           <section className="rounded-xl border border-warning/50 bg-warning/[0.08] p-4" aria-labelledby="execution-start-clarification">
             <p className="text-xs font-medium text-warning-foreground">{zh ? "只需要你确认这一点" : "One decision is needed"}</p>
             <h3 id="execution-start-clarification" className="mt-1 text-sm font-semibold leading-relaxed">{summary.clarification.question}</h3>
+            {summary.clarification.reason ? (
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                <span className="font-medium text-foreground">{zh ? "原因：" : "Why: "}</span>
+                {summary.clarification.reason}
+              </p>
+            ) : null}
+            {summary.clarification.recommendation ? (
+              <p className="mt-2 rounded-lg bg-background/70 px-3 py-2 text-sm leading-relaxed">
+                <span className="font-medium">{zh ? "建议：" : "Recommendation: "}</span>
+                {summary.clarification.recommendation}
+              </p>
+            ) : null}
+            {summary.clarification.options.length ? (
+              <div className="mt-3 space-y-2">
+                {summary.clarification.options.map((option) => (
+                  <div key={option.id} className="rounded-lg border border-border bg-background/75 p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-semibold">{option.label}</p>
+                      {option.recommended ? <Badge>{zh ? "推荐" : "Recommended"}</Badge> : null}
+                    </div>
+                    {option.description ? <p className="mt-1 text-sm leading-relaxed">{option.description}</p> : null}
+                    {option.impact ? <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{zh ? "影响：" : "Impact: "}{option.impact}</p> : null}
+                    {option.targetFields.length ? (
+                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                        {zh ? "将更新：" : "Will update: "}
+                        {option.targetFields.map((target) => clarificationTargetLabel(target, zh)).join(zh ? "、" : ", ")}
+                      </p>
+                    ) : null}
+                    {onClarificationChoice ? (
+                      <Button className="mt-2" type="button" size="sm" variant={option.recommended ? "primary" : "secondary"} disabled={pending} onClick={() => onClarificationChoice(option)}>
+                        {option.applyMode === "automatic"
+                          ? (zh ? "采用这个选项" : "Use this option")
+                          : (zh ? "前往调整" : "Review and edit")}
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </section>
         ) : null}
 

@@ -1,10 +1,13 @@
+import {
+  normalizeDeliveryEvidenceDomain,
+  normalizeDeliveryEvidenceRisk,
+  normalizeDeliveryEvidenceStatus,
+  normalizeWorkItemReviewBlockedReasonCodes,
+} from "@myagenttool/protocol/delivery-evidence";
+
 const ACTION_LOCK_STATUSES = new Set(["accepted", "running", "unknown"]);
 const REVERIFIABLE_STATUSES = new Set(["done", "pr_open", "blocked", "cancelled"]);
 const REPAIRABLE_STATUSES = new Set(["failed", "blocked", "done", "report_posted", "plan_proposed", "pr_open"]);
-
-function unique(values) {
-  return [...new Set(values.filter(Boolean))];
-}
 
 function action(kind, {
   enabled,
@@ -18,7 +21,7 @@ function action(kind, {
     enabled: Boolean(enabled),
     requiresConfirmation,
     nextOwner,
-    blockedReasonCodes: unique(enabled ? [] : blockedReasonCodes),
+    blockedReasonCodes: normalizeWorkItemReviewBlockedReasonCodes(enabled ? [] : blockedReasonCodes),
   };
 }
 
@@ -41,8 +44,11 @@ export function projectWorkItemReviewActions({
   const lockReasons = locked ? ["execution_action_in_flight_or_unknown"] : [];
   const hasAutoRun = executionKind === "auto_run";
   const preview = deliveryEvidence?.actionPreview ?? null;
-  const development = deliveryEvidence?.domain === "development";
-  const office = deliveryEvidence?.domain === "office";
+  const evidenceStatus = normalizeDeliveryEvidenceStatus(deliveryEvidence?.status);
+  const evidenceRisk = normalizeDeliveryEvidenceRisk(deliveryEvidence?.risk);
+  const evidenceDomain = normalizeDeliveryEvidenceDomain(deliveryEvidence?.domain);
+  const development = evidenceDomain === "development";
+  const office = evidenceDomain === "office";
 
   if (development && preview) {
     const hasChanges = Number(preview.changedFileCount ?? 0) > 0;
@@ -64,7 +70,7 @@ export function projectWorkItemReviewActions({
       ],
     }));
 
-    const needsRepair = ["changes_requested", "verification_failed"].includes(deliveryEvidence.status)
+    const needsRepair = ["changes_requested", "verification_failed"].includes(evidenceStatus)
       || deliveryEvidence.review?.verdict === "changes_requested"
       || verification?.status === "failed"
       || ["failed", "blocked"].includes(targetStatus);
@@ -89,12 +95,12 @@ export function projectWorkItemReviewActions({
 
   if (preview?.operation) {
     const rollback = preview.officeDetails?.batch?.rollback ?? null;
-    const deliveryBlockedReasons = unique([
+    const deliveryBlockedReasons = normalizeWorkItemReviewBlockedReasonCodes([
       ...(preview.blockedReasonCodes ?? deliveryEvidence?.blockingReasonCodes ?? []),
       rollback?.status === "partial" && "office_rollback_incomplete",
       ...lockReasons,
     ]);
-    const deliveryEnabled = preview.canProceed === true && !locked;
+    const deliveryEnabled = evidenceStatus === "ready" && evidenceRisk === "low" && preview.canProceed === true && !locked;
     const deliveryActionOptions = {
       enabled: deliveryEnabled,
       requiresConfirmation: preview.requiresConfirmation !== false,
@@ -104,7 +110,8 @@ export function projectWorkItemReviewActions({
     // `review_result` is the compatibility action rendered by today's review
     // card; retain the concrete operation alongside it for the next UI slice.
     if (recommendedAction?.kind === "review_result" && preview.operation !== "review_result") {
-      const blockedOnlyByNoDeliveryIntent = deliveryEvidence?.status === "ready"
+      const blockedOnlyByNoDeliveryIntent = evidenceStatus === "ready"
+        && evidenceRisk === "low"
         && deliveryBlockedReasons.length === 1
         && deliveryBlockedReasons[0] === "delivery_action_forbidden_by_intent"
         && !locked;

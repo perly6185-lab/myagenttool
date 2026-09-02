@@ -18,6 +18,7 @@ test("development verification failure enables repair and reverification but blo
     deliveryEvidence: {
       domain: "development",
       status: "verification_failed",
+      risk: "high",
       review: { verdict: "approved" },
       actionPreview: {
         operation: "update_pull_request",
@@ -44,6 +45,7 @@ test("partial office batch keeps details readable and blocks applying another re
     deliveryEvidence: {
       domain: "office",
       status: "office_batch_attention",
+      risk: "high",
       blockingReasonCodes: ["office_batch_attention"],
       actionPreview: {
         operation: "apply_office_result",
@@ -68,6 +70,7 @@ test("failed office rollback is an explicit delivery blocker", () => {
     deliveryEvidence: {
       domain: "office",
       status: "office_batch_attention",
+      risk: "high",
       actionPreview: {
         operation: "apply_office_result",
         canProceed: false,
@@ -83,6 +86,32 @@ test("failed office rollback is an explicit delivery blocker", () => {
   ]);
 });
 
+test("inconsistent office batch evidence remains inspectable but cannot be applied", () => {
+  const result = projectWorkItemReviewActions({
+    state: "review_ready",
+    targetStatus: "done",
+    executionKind: "auto_run",
+    deliveryEvidence: {
+      domain: "office",
+      status: "office_batch_attention",
+      risk: "high",
+      actionPreview: {
+        operation: "apply_office_result",
+        canProceed: false,
+        blockedReasonCodes: ["office_batch_attention", "office_batch_evidence_inconsistent"],
+        officeDetails: { batch: { countConsistent: false, rollback: { status: "not_available" } } },
+      },
+    },
+  });
+
+  assert.equal(byKind(result, "view_batch_details").enabled, true);
+  assert.equal(byKind(result, "apply_office_result").enabled, false);
+  assert.deepEqual(byKind(result, "apply_office_result").blockedReasonCodes, [
+    "office_batch_attention",
+    "office_batch_evidence_inconsistent",
+  ]);
+});
+
 test("missing review evidence disables delivery while preserving safe inspection actions", () => {
   const result = projectWorkItemReviewActions({
     state: "review_ready",
@@ -94,6 +123,7 @@ test("missing review evidence disables delivery while preserving safe inspection
     deliveryEvidence: {
       domain: "development",
       status: "evidence_incomplete",
+      risk: "unknown",
       actionPreview: {
         operation: "create_pull_request",
         changedFileCount: 1,
@@ -125,6 +155,7 @@ test("an intent that forbids delivery still allows confirming the reviewed resul
     deliveryEvidence: {
       domain: "development",
       status: "ready",
+      risk: "low",
       review: { verdict: "approved" },
       actionPreview: {
         operation: "apply_local_changes",
@@ -153,6 +184,7 @@ test("an uncertain execution receipt locks every mutating review action", () => 
     deliveryEvidence: {
       domain: "development",
       status: "verification_failed",
+      risk: "high",
       actionPreview: {
         operation: "create_pull_request", changedFileCount: 1, canProceed: false,
         blockedReasonCodes: ["verification_failed"],
@@ -185,8 +217,51 @@ test("a disabled delivery without a specialized diagnosis still returns a usable
     executionKind: "auto_run",
     deliveryEvidence: {
       domain: "office",
+      risk: "unknown",
       actionPreview: { operation: "apply_office_result", canProceed: false, blockedReasonCodes: [] },
     },
   });
   assert.deepEqual(byKind(result, "apply_office_result").blockedReasonCodes, ["delivery_evidence_not_ready"]);
+});
+
+test("an unknown evidence status fails closed even when an older producer marks the preview ready", () => {
+  const result = projectWorkItemReviewActions({
+    state: "review_ready",
+    executionKind: "auto_run",
+    deliveryEvidence: {
+      domain: "development",
+      status: "future_ready_state",
+      risk: "low",
+      actionPreview: {
+        operation: "apply_local_changes",
+        changedFileCount: 1,
+        canProceed: true,
+        blockedReasonCodes: ["provider_specific_blocker"],
+      },
+    },
+  });
+
+  assert.equal(byKind(result, "apply_local_changes").enabled, false);
+  assert.deepEqual(byKind(result, "apply_local_changes").blockedReasonCodes, ["delivery_evidence_not_ready"]);
+});
+
+test("an unknown evidence risk fails closed even when status and preview claim readiness", () => {
+  const result = projectWorkItemReviewActions({
+    state: "review_ready",
+    executionKind: "auto_run",
+    deliveryEvidence: {
+      domain: "development",
+      status: "ready",
+      risk: "future_risk",
+      actionPreview: {
+        operation: "apply_local_changes",
+        changedFileCount: 1,
+        canProceed: true,
+        blockedReasonCodes: [],
+      },
+    },
+  });
+
+  assert.equal(byKind(result, "apply_local_changes").enabled, false);
+  assert.deepEqual(byKind(result, "apply_local_changes").blockedReasonCodes, ["delivery_evidence_not_ready"]);
 });

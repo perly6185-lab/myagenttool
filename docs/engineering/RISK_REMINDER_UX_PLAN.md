@@ -1,6 +1,8 @@
 # 开发类与办公类风险提醒：设计与开发计划
 
-更新时间：2026-08-26
+更新时间：2026-09-02
+
+状态：阶段 1—3 与阶段 4A 契约收敛已完成，R1—R4 均已收口；R5.1 已将 8 个场景接入真实生产组件并绑定 clean candidate commit、locale 与视口，等待真实参与者记录；R6 已完成门禁接线和发布清单契约，仍被 R5 真实结论、clean commit 与全量平台检查阻断。下述“契约收敛”不扩大任务执行权限。
 
 ## 目标
 
@@ -13,6 +15,23 @@
 3. 当前缺少哪类证据；
 4. 点击动作会造成什么影响。
 
+## 设计原则
+
+1. **事实与文案分离。** 服务端输出领域、证据状态、阻断原因和动作可用性；前端只把这些事实翻译成普通用户可理解的状态、说明和动作。
+2. **结果风险与动作风险分离。** “结果是否可信”不能和“点击后会改什么”合并成一个等级。即使结果通过，应用到本地、创建 PR 或写入办公资料仍需说明影响。
+3. **缺少证据不等于发现缺陷。** `verification_missing`、`review_pending` 和 `evidence_incomplete` 使用中性或警告表达，不使用确认缺陷的红色。
+4. **服务端门禁优先。** 前端禁用按钮只负责解释；所有写命令必须重新校验相同证据、revision、审批和幂等条件。
+5. **只读动作始终可恢复。** 查看结果、查看变更和查看批次详情不应被写操作锁误伤；写操作状态未知时，优先允许查看和重新核对。
+6. **普通用户先看到结论。** 文件路径、行号、命令输出和内部 ID 进入展开证据或专业视图，不占据首屏结论。
+
+## 非目标
+
+- 不用风险提醒替代审批、交付门禁或本地 Bridge 策略。
+- 不根据自然语言文案在前端猜测是否允许写入。
+- 不在没有恢复快照和冲突检测时提供“人工回滚”按钮。
+- 不把外部发送、付款、删除或权限变化并入普通“确认结果”；这些动作继续独立强确认。
+- 不在遥测中记录文件名、字段值、复核正文、命令输出、内容摘要或凭据。
+
 ## 用户可见状态
 
 | 状态 | 适用条件 | 用户动作 |
@@ -24,6 +43,25 @@
 | 复核结论不一致 | 状态为需修改，但没有问题项且摘要为正面 | 查看完整复核或重新复核，不盲目重写 |
 
 “高风险”只用于有明确阻塞问题的结果。证据缺失使用“需要补验证”，结论矛盾使用“复核结论不一致”。这两类状态使用警告色，不使用确认缺陷的红色。
+
+## 机器状态与用户状态映射
+
+`deliveryEvidence.status` 是结果证据状态，`actionPreview.canProceed` 是当前交付动作能否继续，二者必须同时满足才能开放写入动作。
+
+| 服务端状态 | 风险 | 用户状态 | 默认下一步 | 交付动作 |
+| --- | --- | --- | --- | --- |
+| `ready` | `low` | 可以确认 | 查看结果并确认实际表现 | 仅在 `canProceed=true` 时开放 |
+| `review_pending` | `unknown` | 等待复核 | 等待或查看过程 | 禁止 |
+| `evidence_incomplete` | `unknown` | 复核证据不完整 | 补齐结构化复核 | 禁止 |
+| `review_inconsistent` | `unknown` | 复核结论不一致 | 查看完整复核或重新复核 | 禁止 |
+| `changes_requested` | `high` | 需要返工 | 查看问题，再让 AI 修复 | 禁止 |
+| `verification_failed` | `high` | 需要修复验证失败 | 查看失败输出、修复或补跑 | 禁止 |
+| `verification_missing` | `medium` | 需要补验证 | 配置或执行可复现验证 | 禁止 |
+| `office_batch_attention` | `high` | 批次需要处理 | 查看失败、未知和回滚详情 | 禁止 |
+| `office_batch_rolled_back` | `medium` | 批次已回滚 | 确认恢复结果；需要时新建批次 | 禁止 |
+| `office_batch_in_progress` | `medium` | 批次处理中 | 等待最终计数 | 禁止 |
+
+未知的新状态必须降级为“待确认”，隐藏写入动作并保留只读详情入口，不能按 `ready` 处理。
 
 ## 领域差异
 
@@ -52,6 +90,75 @@
 ```
 
 技术详情继续保留在完整报告和专业详情中；普通用户首先看到可执行的下一步，不需要理解 Worktree、Invocation 或内部 ID。
+
+### 信息层级
+
+第一层始终可见：
+
+- 工作类型：开发交付、办公资料处理或其他任务；
+- 用户状态与结果风险；
+- 一句话原因；
+- 推荐下一步。
+
+第二层按需展开：
+
+- 开发类：变更文件数量、复核问题、验证状态和交付通道；
+- 办公类：目标资料、预计记录、字段范围、成功/失败/恢复/待处理/未知计数；
+- 动作影响：应用本地、创建/更新 PR、应用办公结果分别说明。
+
+第三层进入专业详情：
+
+- 文件与行号；
+- 有限验证输出；
+- reviewed commit、worktree、批次 journal 和审计引用；
+- 完整复核报告。
+
+### 视觉与打扰等级
+
+| 类型 | 视觉语义 | 是否主动打断 |
+| --- | --- | --- |
+| 可以确认 | 成功色 | 否 |
+| 等待复核/处理中 | 中性色 | 否，状态自动刷新 |
+| 证据缺失/结论不一致/已回滚 | 警告色 | 仅在用户尝试交付时阻止并解释 |
+| 明确复核问题/验证失败/批次异常 | 危险色 | 是，突出具体阻塞原因 |
+| 外部发送/付款/删除/权限变化 | 独立强确认 | 是，不与结果确认合并 |
+
+## 架构与责任边界
+
+```text
+执行、复核、验证、办公批次 journal
+  -> work-item-delivery-evidence（规范化事实与领域）
+    -> work-item-risk-review（风险原因与推荐动作）
+    -> work-item-review-actions（动作可用性与阻断原因）
+      -> execution review HTTP 投影
+        -> Web 展示模型与风险卡片
+          -> 受控命令（再次校验证据、revision、审批与幂等）
+```
+
+### 服务端
+
+- `work-item-delivery-evidence.mjs` 是领域、复核证据、验证证据、办公影响和交付预览的权威来源。
+- `work-item-risk-review.mjs` 只消费规范化事实，输出风险原因与推荐动作，不查询可变状态。
+- `work-item-review-actions.mjs` 输出 `visible`、`enabled`、`requiresConfirmation`、`nextOwner` 和 `blockedReasonCodes`。
+- 命令服务不能信任前端投影；证据未就绪时继续以 `409 work_item_delivery_evidence_not_ready` 或更具体状态拒绝。
+- 办公批次的失败、未知、处理中和回滚状态可以覆盖基础的“复核通过 + 验证通过”结论。
+
+### Web
+
+- `work-item-summary-model.ts` 负责把服务端事实转换为普通用户文案，不拥有写入权限。
+- `work-item-delivery-decision-card.tsx` 展示结果风险、动作影响和领域化证据。
+- `execution-review-actions.tsx` 只消费服务端动作投影；未知动作保持可见但不猜测写入 handler。
+- `work-item-review-action-controller.ts` 负责把投影动作连接到现有受控 handler，并在写操作锁定时保留只读动作。
+
+### 契约收敛进展
+
+R1 已完成：Web 的 `deriveDeliveryDecision` 优先消费服务端 `deliveryEvidence.domain`；只有旧响应缺失字段时才按执行类型、任务类型和文本兼容推导。未知领域降级为通用任务，不猜成开发或办公。单元测试覆盖服务端领域覆盖本地推导、旧响应兼容和未知值降级；任务页集成测试覆盖本地线索为开发、服务端证据为办公时仍使用办公风险和确认文案。
+
+R2 已完成：`@myagenttool/protocol/delivery-evidence` 统一声明证据状态、风险、领域和操作阻断原因；服务端生成证据及动作投影、Web 类型及用户文案共同消费该目录。未知状态降级为 `evidence_incomplete`，未知风险降级为 `unknown`，未知原因码替换为 `delivery_evidence_not_ready`。即使旧生产者同时返回 `canProceed: true`，未知状态也不能启用写操作；Web 不显示未经约束的供应商私有码。
+
+R3 已收口：服务端从 AutoRun 执行合同投影 `reviewIntent`，任务意图卡、执行审核卡、动作说明和最终确认弹窗消费同一份冻结事实；共享的只读冲突 fixture 证明后续可变任务文本不能把“只读分析”漂移为“应用、提交、创建 PR 或推送”。
+
+R4 已收口：`projectOfficeBatchEvidence` 将记录操作与文件恢复拆成两个独立维度。成功、已恢复、失败、待处理和未知操作之和必须等于 `operationCount`；回滚只核算受保护、已恢复、受阻和未知文件目标，不再与记录操作相加。总数缺失、重复回执、未知状态、终态冲突或恢复覆盖不守恒都会产生稳定异常码、`office_batch_evidence_inconsistent` 阻断原因和高风险提示，查看详情仍保持可用。
 
 ## 开发计划
 
@@ -91,6 +198,120 @@
 - 真实服务端编码 E2E 已覆盖执行、验证、独立复核和受控交付证据，正式命令从仓库根目录运行以加载评审器配置。
 - 真实用户验收关注：用户能否说出阻塞原因、下一步和点击后影响。
 - 已完成定向服务端/Web 测试、类型检查、Web 生产构建和真实服务端编码 E2E；待完成真实用户验收和最终全量 P4.14 发布门禁。
+
+阶段 4 拆为三个可独立关闭的批次：
+
+#### 4A. 契约收敛
+
+- 已完成：`deliveryEvidence.domain` 成为 Web 新响应的权威输入，旧响应才允许本地兼容推导，未知领域降级为通用任务。
+- 已完成：`deliveryEvidence.status/risk` 的已知值与未知值降级形成权威契约；未知值不能进入低风险可交付状态。
+- 已完成：固定状态与 `blockedReasonCodes` 目录；未知原因 fail closed，并显示通用解释。
+- 确保结果卡、推荐动作、其他动作和最终确认弹窗使用同一 `actionAvailability`。
+- 将 reviewed commit、任务 revision 和交付预览的绑定纳入契约测试。
+
+退出条件：同一个 fixture 经服务端投影、Web 模型和确认弹窗后，领域、风险、阻断原因和动作名称一致。
+
+#### 4B. 真实用户验收
+
+R5 工程准备已完成：8 个脱敏场景固化在 `risk-reminder-user-acceptance@1.0.0`，参与者输出与主持人答案分离；隐藏展示面直接复用生产结果卡和审核决策组件，不加载主持人答案或服务端数据；观察表绑定 clean product commit、`zh-CN` 和受控视口，只接收匿名 ID、枚举评分、专业详情使用标记和时长分桶。评分器要求至少 5 名普通用户完成 160 个回答、不依赖专业详情的正确率达到 90%，并对两类关键误解执行零容忍。执行方法见 [风险提醒真实用户验收手册](RISK_REMINDER_USER_ACCEPTANCE.md)。在取得真实记录前不得宣称 R5 通过。
+
+至少准备以下无敏感数据样本：
+
+1. 开发类复核与验证均通过；
+2. 开发类验证缺失；
+3. 开发类复核结论矛盾；
+4. 开发类有具体问题并允许 AI 修复；
+5. 办公类批次成功；
+6. 办公类部分失败并准备回滚；
+7. 办公类已回滚；
+8. 写操作状态未知但仍可查看详情。
+
+每个样本让参与者回答：发生了什么、为什么、下一步是什么、点击后会影响什么。验收目标：至少 90% 的回答无需查看专业详情即可正确；任何参与者都不能把“缺少验证”理解成“已经发现代码缺陷”，也不能把“创建 PR”理解成“已经合并主分支”。
+
+#### 4C. 发布门禁与回滚
+
+R6 工程准备已完成：P4.14 将 R5 聚合验收作为第一道硬门禁，要求观察记录同时绑定场景 SHA-256 和参与者实际测试的产品 commit，并与当前候选 commit 完全一致；发布 manifest 使用 schema v2，记录 commit、工作区状态、有限验收指标、稳定已知限制和不删除交付证据的回滚策略。缺少真实观察文件时只允许运行配置检查，不允许生成通过的发布候选。
+
+- 完成服务端/Web 定向测试、类型检查、Web 生产构建和真实服务端编码 E2E。
+- 执行 `pnpm release:p4-14:check` 与 `pnpm release:p4-14`，保留平台、commit、耗时和有限输出证据。
+- 发布说明列出未知状态降级、办公批次人工处理边界以及外部高风险动作仍需独立确认。
+- 回滚到上一候选版本时，不删除 delivery evidence、review action receipt 或办公 batch journal。
+
+## 可直接拆 Issue 的工作包
+
+| 工作包 | 状态 | 优先级 | 输出 | 依赖 | 验证 |
+| --- | --- | --- | --- | --- | --- |
+| R1 领域权威收敛 | 已完成 | P1 | Web 优先使用 `deliveryEvidence.domain`，旧响应兼容，未知值安全降级 | 无 | 模型单元测试 + 任务页冲突领域集成测试 |
+| R2 状态与原因码 ratchet | 已完成 | P1 | 共享状态、风险、阻断原因目录；服务端与 Web 对未知值 fail-closed | R1 | 协议、服务端动作投影与 Web 未知状态/原因测试 |
+| R3 确认文案一致性 | 已完成 | P1 | `reviewIntent` 绑定冻结意图摘要、动作效果码和风险码；结果卡、动作卡、确认弹窗共享事实 | R1–R2 | 协议投影测试 + 服务端/Web 共用只读冲突 fixture + 审核卡交互测试 |
+| R4 办公批次证据验收 | 已完成 | P1 | 操作结果守恒；文件恢复独立核算；不一致证据 fail closed | R2 | 协议守恒测试 + 服务端终态/恢复故障注入 + Web 批次维度与阻断提示测试 |
+| R5 真实用户验收包 | 工程准备完成，待真实执行 | P1 | 8 个样本、观察表、结论与待修复项 | R1–R4 | 数据集契约测试 + 人工验收记录 |
+| R6 P4.14 发布证据 | 工程准备完成，等待 R5 与全量执行 | P1 | candidate manifest、已知限制和回滚说明 | R5 | R5 聚合门禁 + clean commit + P4.14 全量门禁 |
+
+每个工作包只允许改变一层主责任。R1/R2 不重做页面，R3 不改变服务端判定，R4 不引入通用办公写入，R5/R6 不顺带扩展产品功能。
+
+## 测试矩阵
+
+### 服务端
+
+```text
+node --test \
+  apps/server/test/work-item-delivery-evidence.test.mjs \
+  apps/server/test/work-item-risk-review.test.mjs \
+  apps/server/test/work-item-review-actions.test.mjs \
+  apps/server/test/work-item-execution-review.test.mjs
+```
+
+必须覆盖：
+
+- 结构化复核通过、需修改、待处理、不可用和结论矛盾；
+- 验证通过、失败、未配置和设施不可用；
+- reviewed commit 与当前交付不一致；
+- 办公批次成功、部分失败、未知、处理中、已回滚和部分回滚；
+- `canProceed=false` 时命令服务仍拒绝，即使调用方绕过 Web。
+
+### Web
+
+```text
+pnpm --filter @myagenttool/web exec vitest run \
+  src/features/tasks/work-item-summary-model.test.ts \
+  src/features/tasks/work-item-summary-view.test.tsx \
+  src/features/tasks/work-item-result-presentation.test.tsx \
+  src/features/tasks/work-item-review-action-controller.test.ts
+pnpm --filter @myagenttool/web typecheck
+pnpm --filter @myagenttool/web build
+```
+
+必须覆盖：
+
+- 五种核心用户状态与三种办公批次覆盖状态；
+- 高风险只对应明确问题，证据缺失使用警告语义；
+- 创建 PR、更新 PR、应用本地代码和应用办公结果的文案互不混用；
+- 写动作禁用时逐项展示原因，只读动作仍可用；
+- 未知服务端状态、未知动作和旧响应的安全降级。
+
+### 真实用户旅程
+
+```text
+pnpm --filter @myagenttool/web exec playwright test \
+  -c playwright.config.ts ordinary-coding-real-server.spec.ts
+pnpm release:p4-14:check
+pnpm release:p4-14
+```
+
+办公类还需执行 [P4.14 审核、验收与发布门禁](P4_14_RELEASE_ACCEPTANCE.md) 中的单记录、批次失败、外部漂移、重启续作和敏感信息检查。
+
+## 遥测与隐私
+
+若阶段 4 增加验收遥测，只记录枚举和耗时：领域、证据状态、风险、展示的动作种类、选中的动作、阻断原因码、从展示到动作的耗时。禁止记录任务标题、文件名、字段名、复核正文、验证命令、命令输出、内容 hash、内部路径或凭据。
+
+建议关注：
+
+- 用户首次动作是否与推荐动作一致；
+- 被禁用动作的主要阻断原因；
+- “需要补验证”被错误选择“让 AI 修复”的比例；
+- 办公批次异常从展示到查看详情的转化；
+- 状态未知后重复提交写操作的次数，目标必须为零。
 
 ## 后续治理接口
 

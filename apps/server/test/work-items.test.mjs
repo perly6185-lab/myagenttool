@@ -204,6 +204,147 @@ test("task context correction rejects unsupported roles and locks after executio
   assert.equal(locked.body.error, "work_item_context_locked_after_start");
 });
 
+test("intent clarification applies only a current server-defined choice and replays idempotently", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "修改客户台账",
+    intentStatement: "把已联系客户写回台账",
+    acceptanceCriteria: ["三条记录状态正确"],
+    verificationSop: ["核对三条记录"],
+  }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === created.id);
+  stored.channelTaskContract = {
+    source: "channel",
+    operationIntent: { accessMode: "read_only", action: "query_data", forbiddenActions: [] },
+  };
+  const current = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  assert.equal(current.intentContract.clarification.code, "write_request_exceeds_confirmed_boundary");
+
+  const stale = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: current.revision,
+    intentResolution: {
+      idempotencyKey: "intent-stale",
+      expectedIntentDigest: "0".repeat(64),
+      conflictCode: "write_request_exceeds_confirmed_boundary",
+      choiceId: "allow_write",
+    },
+  }, ACTOR_A);
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error, "work_item_intent_clarification_stale");
+
+  const denied = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: current.revision,
+    intentResolution: {
+      idempotencyKey: "intent-denied",
+      expectedIntentDigest: current.intentContract.digest,
+      conflictCode: "write_request_exceeds_confirmed_boundary",
+      choiceId: "write_everything",
+    },
+  }, ACTOR_A);
+  assert.equal(denied.status, 400);
+  assert.equal(denied.body.error, "work_item_intent_resolution_choice_not_allowed");
+
+  const arbitraryPatch = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: current.revision,
+    intentResolution: {
+      idempotencyKey: "intent-arbitrary-patch",
+      expectedIntentDigest: current.intentContract.digest,
+      conflictCode: "write_request_exceeds_confirmed_boundary",
+      choiceId: "allow_write",
+      targetFields: ["delivery.platform"],
+    },
+  }, ACTOR_A);
+  assert.equal(arbitraryPatch.status, 400);
+  assert.equal(arbitraryPatch.body.error, "work_item_intent_resolution_must_be_isolated");
+
+  const resolved = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: current.revision,
+    intentResolution: {
+      idempotencyKey: "intent-allow-write",
+      expectedIntentDigest: current.intentContract.digest,
+      conflictCode: "write_request_exceeds_confirmed_boundary",
+      choiceId: "allow_write",
+    },
+  }, ACTOR_A);
+  assert.equal(resolved.status, 200);
+  assert.equal(resolved.body.replayed, false);
+  assert.equal(resolved.body.workItem.revision, current.revision + 1);
+  assert.equal(resolved.body.workItem.intentContract.status, "ready");
+  assert.equal(resolved.body.workItem.intentContract.action.accessMode, "write");
+
+  const replayed = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: current.revision,
+    intentResolution: {
+      idempotencyKey: "intent-allow-write",
+      expectedIntentDigest: current.intentContract.digest,
+      conflictCode: "write_request_exceeds_confirmed_boundary",
+      choiceId: "allow_write",
+    },
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.workItem.revision, resolved.body.workItem.revision);
+
+  const conflictingReplay = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: current.revision,
+    intentResolution: {
+      idempotencyKey: "intent-allow-write",
+      expectedIntentDigest: current.intentContract.digest,
+      conflictCode: "write_request_exceeds_confirmed_boundary",
+      choiceId: "keep_read_only",
+    },
+  }, ACTOR_A);
+  assert.equal(conflictingReplay.status, 409);
+  assert.equal(conflictingReplay.body.error, "work_item_intent_resolution_idempotency_conflict");
+  assert.equal(state.workItemActivities[0].action, "work_item_intent_clarification_resolved");
+});
+
+test("manual intent clarification choices cannot be applied as an automatic context patch", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "只读分析客户台账，不要修改",
+    acceptanceCriteria: ["给出分析结论"],
+    verificationSop: ["核对分析范围"],
+  }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === created.id);
+  stored.taskResourceRefs = [{
+    id: "wrr_ledger",
+    resourceId: "res_ledger",
+    title: "客户台账",
+    purpose: "change_target",
+    locality: "local",
+    capabilities: ["read", "query", "propose_change", "commit_change"],
+    allowedPurposes: ["reference", "query_source", "change_target"],
+  }];
+  const current = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  assert.equal(current.intentContract.clarification.code, "read_only_with_change_targets");
+
+  const result = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: current.revision,
+    intentResolution: {
+      idempotencyKey: "intent-manual-option",
+      expectedIntentDigest: current.intentContract.digest,
+      conflictCode: "read_only_with_change_targets",
+      choiceId: "review_material_roles",
+    },
+  }, ACTOR_A);
+
+  assert.equal(result.status, 409);
+  assert.equal(result.body.error, "work_item_intent_choice_requires_manual_edit");
+  assert.deepEqual(result.body.targetFields, ["materials.roles"]);
+  assert.equal(stored.revision, current.revision);
+  assert.equal(stored.taskResourceRefs[0].purpose, "change_target");
+});
+
 test("desktop intent planning creates discrete typed tasks instead of one giant task", () => {
   const { service, state } = harness();
   const input = {

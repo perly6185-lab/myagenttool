@@ -1,0 +1,204 @@
+{
+  "datasetId": "risk-reminder-user-acceptance",
+  "datasetVersion": "1.0.0",
+  "language": "zh-CN",
+  "surface": {
+    "version": "risk-reminder-ui-v1",
+    "route": "/_acceptance/risk-reminders",
+    "locale": "zh-CN",
+    "viewport": {
+      "minimumWidth": 1280,
+      "minimumHeight": 720,
+      "maximumWidth": 1920,
+      "maximumHeight": 1200
+    }
+  },
+  "policy": {
+    "minimumParticipants": 5,
+    "requiredParticipantProfile": "ordinary_user",
+    "minimumAnswerAccuracy": 0.9,
+    "maximumCriticalMisconceptions": 0,
+    "requiredScenarioIds": [
+      "development_ready",
+      "development_verification_missing",
+      "development_review_inconsistent",
+      "development_changes_requested",
+      "office_batch_committed",
+      "office_batch_partial",
+      "office_batch_rolled_back",
+      "office_write_state_unknown"
+    ]
+  },
+  "questions": [
+    { "id": "what_happened", "prompt": "发生了什么？" },
+    { "id": "why", "prompt": "为什么现在是这个状态？" },
+    { "id": "next_step", "prompt": "下一步应该做什么？" },
+    { "id": "action_impact", "prompt": "点击主要动作后会影响什么？" }
+  ],
+  "criticalMisconceptions": [
+    "verification_missing_means_defect_found",
+    "pull_request_means_merged"
+  ],
+  "scenarios": [
+    {
+      "id": "development_ready",
+      "domain": "development",
+      "participantView": {
+        "workType": "开发交付",
+        "status": "可以确认",
+        "risk": "低风险",
+        "reason": "独立复核通过，可复现检查也已通过。",
+        "completed": "修改了 3 个文件；测试和类型检查通过。",
+        "recommendedNextStep": "查看结果后，确认并创建 Pull Request。",
+        "primaryAction": "确认并创建 Pull Request",
+        "actionImpact": "把当前分支提交为待审核的 Pull Request；不会自动合并到主分支。"
+      },
+      "facilitatorGuide": {
+        "what_happened": "开发结果已完成复核和验证，等待用户确认交付。",
+        "why": "独立复核与可复现检查都通过。",
+        "next_step": "查看结果并决定是否创建 Pull Request。",
+        "action_impact": "创建待审核的 Pull Request，不会合并主分支。"
+      }
+    },
+    {
+      "id": "development_verification_missing",
+      "domain": "development",
+      "participantView": {
+        "workType": "开发交付",
+        "status": "需要补验证",
+        "risk": "证据不足",
+        "reason": "当前没有配置可复现的自动检查；系统尚未发现具体代码缺陷。",
+        "completed": "代码修改已生成，独立复核没有报告明确问题。",
+        "recommendedNextStep": "配置并运行测试或其他可复现检查。",
+        "primaryAction": "查看结果",
+        "actionImpact": "只打开当前结果和证据，不会修改代码或创建 Pull Request。"
+      },
+      "facilitatorGuide": {
+        "what_happened": "结果已生成，但缺少验证证据。",
+        "why": "没有配置可复现检查，不代表已经发现缺陷。",
+        "next_step": "配置并运行验证。",
+        "action_impact": "只读查看，不产生写入。"
+      }
+    },
+    {
+      "id": "development_review_inconsistent",
+      "domain": "development",
+      "participantView": {
+        "workType": "开发交付",
+        "status": "复核结论不一致",
+        "risk": "待确认",
+        "reason": "复核状态要求修改，但没有问题项，摘要却表示可以交付。",
+        "completed": "代码和检查结果仍被保留，交付动作暂时禁用。",
+        "recommendedNextStep": "查看完整复核，或重新运行独立复核。",
+        "primaryAction": "查看完整复核",
+        "actionImpact": "只读取复核证据，不会改写代码或放行交付。"
+      },
+      "facilitatorGuide": {
+        "what_happened": "复核机器状态和复核内容互相冲突。",
+        "why": "要求修改却没有问题项，且摘要为正面。",
+        "next_step": "查看或重新执行复核，不盲目返工或放行。",
+        "action_impact": "只读查看复核证据。"
+      }
+    },
+    {
+      "id": "development_changes_requested",
+      "domain": "development",
+      "participantView": {
+        "workType": "开发交付",
+        "status": "需要返工",
+        "risk": "高风险",
+        "reason": "独立复核发现 2 个明确问题，其中 1 个会造成错误写入。",
+        "completed": "问题位置和复核证据已经记录，当前结果不能交付。",
+        "recommendedNextStep": "让 AI 在隔离工作区修复这些问题，然后重新验证。",
+        "primaryAction": "让 AI 修复",
+        "actionImpact": "在本次任务的隔离工作区继续修改；不会直接改动本地主分支。"
+      },
+      "facilitatorGuide": {
+        "what_happened": "复核发现明确问题，结果被阻止交付。",
+        "why": "存在会造成错误写入的具体复核问题。",
+        "next_step": "让 AI 修复并重新验证。",
+        "action_impact": "只修改隔离工作区，不直接改本地主分支。"
+      }
+    },
+    {
+      "id": "office_batch_committed",
+      "domain": "office",
+      "participantView": {
+        "workType": "办公资料处理",
+        "status": "可以确认",
+        "risk": "低风险",
+        "reason": "36 条操作全部成功，2 个目标文件都有恢复快照。",
+        "completed": "操作回执 36/36；目标文件 2；失败 0；未知 0。",
+        "recommendedNextStep": "查看处理结果并确认本次办公交付。",
+        "primaryAction": "确认办公结果",
+        "actionImpact": "确认当前已完成的办公批次，不会对外发送、付款、删除或更改权限。"
+      },
+      "facilitatorGuide": {
+        "what_happened": "办公批次已完整成功并留下恢复证据。",
+        "why": "所有操作都有成功回执且文件目标有快照。",
+        "next_step": "查看结果并确认交付。",
+        "action_impact": "确认现有批次，不包含其他高风险外部动作。"
+      }
+    },
+    {
+      "id": "office_batch_partial",
+      "domain": "office",
+      "participantView": {
+        "workType": "办公资料处理",
+        "status": "批次需要处理",
+        "risk": "高风险",
+        "reason": "20 条操作中 18 条成功、2 条失败，系统正在准备恢复失败影响。",
+        "completed": "操作回执 20/20；成功 18；失败 2；恢复尚未完成。",
+        "recommendedNextStep": "查看失败项和恢复详情，等待恢复终态。",
+        "primaryAction": "查看批次详情",
+        "actionImpact": "只读查看逐条状态；不会重试、覆盖或再次写入资料。"
+      },
+      "facilitatorGuide": {
+        "what_happened": "办公批次部分成功，恢复尚未完成。",
+        "why": "有 2 条失败，外部影响还没有收敛。",
+        "next_step": "查看失败和恢复详情并等待终态。",
+        "action_impact": "只读查看，不重新执行写入。"
+      }
+    },
+    {
+      "id": "office_batch_rolled_back",
+      "domain": "office",
+      "participantView": {
+        "workType": "办公资料处理",
+        "status": "批次已回滚",
+        "risk": "需要核对",
+        "reason": "本次批次未能完成，2 个受影响文件已经从快照恢复。",
+        "completed": "文件恢复 2/2；受阻 0；未知 0；原批次不会继续。",
+        "recommendedNextStep": "核对恢复结果；仍需处理时新建批次。",
+        "primaryAction": "查看恢复详情",
+        "actionImpact": "只读查看恢复证据，不会重新应用已回滚的修改。"
+      },
+      "facilitatorGuide": {
+        "what_happened": "失败批次已经回滚，原修改不再生效。",
+        "why": "受影响文件均已从快照恢复。",
+        "next_step": "核对恢复结果，需要时另建批次。",
+        "action_impact": "只读查看，不重新应用修改。"
+      }
+    },
+    {
+      "id": "office_write_state_unknown",
+      "domain": "office",
+      "participantView": {
+        "workType": "办公资料处理",
+        "status": "写入状态待确认",
+        "risk": "高风险",
+        "reason": "系统只有 9/10 条操作回执，无法确认最后 1 条是否影响了资料。",
+        "completed": "已知成功 8；已知失败 1；状态未知 1；再次写入已禁用。",
+        "recommendedNextStep": "查看批次详情并重新核对状态，不要重复提交。",
+        "primaryAction": "查看批次详情",
+        "actionImpact": "只读查看现有证据；不会重复执行写操作。"
+      },
+      "facilitatorGuide": {
+        "what_happened": "写操作回执不完整，真实外部影响未知。",
+        "why": "缺少 1 条操作回执，不能安全判断终态。",
+        "next_step": "查看并重新核对状态，不重复提交。",
+        "action_impact": "只读查看，不执行写操作。"
+      }
+    }
+  ]
+}

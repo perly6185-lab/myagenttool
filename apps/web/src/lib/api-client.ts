@@ -2785,6 +2785,12 @@ export const api = {
     expectedRevision: number;
     deliveryDestination?: "channel" | "task";
     materialRoles?: Array<{ id: string; role: "required_input" | "reference" | "query_source" | "change_target" }>;
+    intentResolution?: {
+      idempotencyKey: string;
+      expectedIntentDigest: string;
+      conflictCode: string;
+      choiceId: string;
+    };
   }) => request("PATCH", `/api/work-items/${encodeURIComponent(id)}/task-context`, payload),
   refreshWorkItemRecordBinding: (workItemId: string, bindingId: string, expectedRevision: number) =>
     request(

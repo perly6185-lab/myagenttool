@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { projectWorkItemExecutionReview } from "../src/services/work-item-execution-review.mjs";
 
@@ -11,6 +12,10 @@ const STARTED = {
   targetId: "aur_1",
   agentId: "agt_1",
 };
+const readOnlyReviewFixture = JSON.parse(readFileSync(
+  new URL("../../../packages/protocol/test/fixtures/work-item-review-intent-read-only.json", import.meta.url),
+  "utf8",
+));
 
 test("projects a running development task into ordinary stages and structured verification", () => {
   const item = {
@@ -131,6 +136,47 @@ test("separates a created pull request from an applied result", () => {
   assert.deepEqual(review.impact, { status: "proposed", reasonCode: "pull_request_created" });
   assert.equal(review.recommendedAction.kind, "review_result");
   assert.deepEqual(review.riskReasons, [{ code: "pull_request_not_applied", severity: "medium", scope: "external_impact" }]);
+});
+
+test("keeps review facts and confirmation semantics pinned to the run intent when the mutable task has changed", () => {
+  const { frozenIntent, deliveryEvidence, mutableTask } = readOnlyReviewFixture;
+  const item = {
+    id: "wi_intent_drift",
+    ...mutableTask,
+    state: "open",
+    status: "review",
+    intentContract: {
+      ...frozenIntent,
+      snapshotKind: "current",
+      readOnly: undefined,
+      digest: "intent:current:write",
+      goal: "提交并推送全部代码",
+      action: { accessMode: "write", operation: "mutate_files", forbiddenActions: [] },
+    },
+    executionBindings: [{ kind: "auto_run", targetId: "aur_intent_drift", createdAt: "2026-08-27T03:00:00.000Z" }],
+  };
+  const review = projectWorkItemExecutionReview({
+    item,
+    state: {
+      autoRuns: [{
+        id: "aur_intent_drift",
+        status: "done",
+        phase: "review_ready",
+        executionContract: { intentContract: frozenIntent },
+        updatedAt: "2026-08-27T03:05:00.000Z",
+      }],
+      invocations: [],
+    },
+    startReceipt: { ...STARTED, targetId: "aur_intent_drift" },
+    deliveryEvidence,
+  });
+
+  assert.equal(review.reviewIntent.intentDigest, "intent:frozen:analysis");
+  assert.equal(review.reviewIntent.goal, "只分析 src 目录，不修改文件");
+  assert.equal(review.reviewIntent.action.accessMode, "read_only");
+  assert.equal(review.reviewIntent.confirmation.operation, "review_result");
+  assert.equal(review.reviewIntent.confirmation.effectCode, "result_only");
+  assert.equal(review.actionAvailability.actions.find((action) => action.kind === "review_result").enabled, true);
 });
 
 test("uses result verification for a document-only code task without runtime verification requirements", () => {
