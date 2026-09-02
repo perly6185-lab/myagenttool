@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { projectWorkItemReviewIntent } from "@myagenttool/protocol/work-item-review-intent";
+import type { WorkItemIntentContract } from "@myagenttool/protocol/work-item-intent-contract";
+import readOnlyReviewFixture from "../../../../../packages/protocol/test/fixtures/work-item-review-intent-read-only.json";
 import type { LocalWorkItem } from "./task-view-types";
-import { deriveDeliveryDecision, deriveWorkItemIntentSummary } from "./work-item-summary-model";
+import { deriveDeliveryDecision, deriveWorkItemIntentSummary, reviewIntentConfirmationCopy } from "./work-item-summary-model";
 
 const baseDecision = {
   language: "en" as const,
@@ -108,6 +111,36 @@ describe("work item delivery decision", () => {
     expect(decision.confirmEffect).not.toContain("base branch");
   });
 
+  it("uses the server evidence domain instead of conflicting local inference", () => {
+    const decision = deriveDeliveryDecision({
+      ...baseDecision,
+      evidenceDomain: "office",
+      taskKind: "software_implementation",
+      taskText: "Apply the reviewed artifact",
+      changedFiles: ["artifact.bin"],
+      reviewVerdict: "approved",
+      reviewStatus: "completed",
+      verification: { passed: true, verified: true, summary: "artifact validated" },
+    });
+
+    expect(decision.domain).toBe("office");
+    expect(decision.domainLabel).toBe("Office/data work");
+    expect(decision.confirmEffect).toContain("office/data result");
+    expect(decision.confirmEffect).not.toContain("base branch");
+  });
+
+  it("fails closed to a generic task when the server returns an unknown domain", () => {
+    const decision = deriveDeliveryDecision({
+      ...baseDecision,
+      evidenceDomain: "future_provider_domain",
+      taskKind: "software_implementation",
+      taskText: "Implement a server feature",
+    });
+
+    expect(decision.domain).toBe("other");
+    expect(decision.domainLabel).toBe("Task delivery");
+  });
+
   it("blocks a partially failed office batch even when review and file verification passed", () => {
     const decision = deriveDeliveryDecision({
       ...baseDecision,
@@ -142,6 +175,35 @@ describe("work item delivery decision", () => {
     expect(decision.state).toBe("caution");
     expect(decision.risk).toBe("medium");
     expect(decision.statusLabel).toBe("Batch rolled back");
+  });
+
+  it("fails closed when the server returns an unknown evidence status", () => {
+    const decision = deriveDeliveryDecision({
+      ...baseDecision,
+      evidenceStatus: "future_ready_state",
+      evidenceRisk: "low",
+      reviewVerdict: "approved",
+      reviewStatus: "completed",
+      verification: { passed: true, verified: true, summary: "checks passed" },
+    });
+
+    expect(decision.state).toBe("caution");
+    expect(decision.risk).toBe("unknown");
+    expect(decision.statusLabel).toBe("Evidence incomplete");
+  });
+
+  it("does not render a ready state when ready evidence has an unknown risk", () => {
+    const decision = deriveDeliveryDecision({
+      ...baseDecision,
+      evidenceStatus: "ready",
+      evidenceRisk: "future_risk",
+      reviewVerdict: "approved",
+      reviewStatus: "completed",
+      verification: { passed: true, verified: true, summary: "checks passed" },
+    });
+
+    expect(decision.state).toBe("caution");
+    expect(decision.risk).toBe("unknown");
   });
 });
 
@@ -189,5 +251,37 @@ describe("work item intent summary", () => {
     expect(summary.state).toBe("needs_confirmation");
     expect(summary.statusLabel).toBe("需要你确认");
     expect(summary.confidenceReason).toContain("仍有歧义");
+  });
+
+  it("uses the same frozen intent for review summary and final confirmation when current task text conflicts", () => {
+    const item = {
+      ...readOnlyReviewFixture.mutableTask,
+      acceptanceCriteria: [],
+    } as unknown as LocalWorkItem;
+    const reviewIntent = projectWorkItemReviewIntent({
+      intentContract: readOnlyReviewFixture.frozenIntent as unknown as WorkItemIntentContract,
+      deliveryEvidence: readOnlyReviewFixture.deliveryEvidence,
+    });
+
+    const summary = deriveWorkItemIntentSummary({ item, domain: "development", language: "zh", reviewIntent });
+    const confirmation = reviewIntentConfirmationCopy({
+      reviewIntent,
+      language: "zh",
+      fallback: {
+        actionLabel: "错误的写入动作",
+        dialogTitle: "错误的写入标题",
+        dialogDescription: "错误的写入说明",
+        dialogConfirm: "提交并推送",
+        effect: "会提交并推送",
+        risk: "远端会改变",
+      },
+    });
+
+    expect(summary.goal).toBe("只分析 src 目录，不修改文件");
+    expect(summary.expectedOutcome).toBe("风险清单");
+    expect(summary.boundary).toContain("只读");
+    expect(confirmation.actionLabel).toBe("确认结果并完成任务（不应用）");
+    expect(confirmation.effect).toContain("不会写入基础分支");
+    expect(confirmation.dialogDescription).not.toContain("推送全部代码");
   });
 });

@@ -1,5 +1,15 @@
 import type { WorkItemContentReference, WorkItemResourceReference } from "@/features/local-content/local-content-types";
+import type {
+  DeliveryEvidenceDomain,
+  DeliveryEvidenceRisk,
+  DeliveryEvidenceStatus,
+  WorkItemReviewBlockedReasonCode,
+} from "@myagenttool/protocol/delivery-evidence";
 import type { LedgerPostingPlan, TaskRecordBinding } from "@myagenttool/protocol/task-resources";
+import type { WorkItemIntentContract } from "@myagenttool/protocol/work-item-intent-contract";
+import type { WorkItemReviewIntent } from "@myagenttool/protocol/work-item-review-intent";
+
+export type { WorkItemIntentContract } from "@myagenttool/protocol/work-item-intent-contract";
 
 export type GithubItem = {
   type: "issue" | "pr";
@@ -16,27 +26,6 @@ export type WorkItemExecutionKind = "auto_run" | "application_invocation" | "art
 export type WorkItemRequesterRelation = "boss" | "manager" | "customer" | "child" | "colleague" | "self" | "unknown";
 export type WorkItemIntakeChannel = "manual" | "meeting" | "email" | "chat" | "phone" | "github" | "import" | "other" | "unknown";
 export type WorkItemWaitingOn = "me" | "requester" | "internal" | "ai" | "none";
-export type WorkItemIntentContract = {
-  schemaVersion: number;
-  workItemId: string | null;
-  goal: string;
-  taskKind: string;
-  action: { accessMode: string; operation: string };
-  expectedOutput: string | null;
-  method: { kind: "template" | "custom"; definitionId: string | null; familyId: string | null; version: number | null; name: string | null };
-  materials: { inputCount: number; changeTargets: Array<{ id: string; title: string; canCommit: boolean }> };
-  delivery: { destination: "channel" | "task"; platformId: string | null; platformLabel: string | null };
-  acceptanceCriteria: string[];
-  verificationSop: string[];
-  conflicts: Array<{ code: string; severity: "blocking" | "warning"; subject: string; message: string; question: string; resolution: "task_context" | "task_definition" | "template" }>;
-  missing: string[];
-  clarification: { code: string; question: string; resolution: "task_context" | "task_definition" | "template" } | null;
-  status: "ready" | "incomplete" | "needs_clarification";
-  digest: string;
-  confirmedAt?: string | null;
-  confirmedBy?: string | null;
-  readOnly?: true;
-};
 export type ExternalWorkItemBinding = {
   kind: "github_issue" | "gitlab_issue" | "gitea_issue";
   provider?: "github" | "gitlab" | "gitea";
@@ -799,9 +788,9 @@ export type WorkItemAttentionMetrics = {
 };
 export type LocalWorkItemDeliveryEvidence = {
   schemaVersion: number;
-  status: "ready" | "review_pending" | "changes_requested" | "verification_failed" | "verification_missing" | "review_inconsistent" | "evidence_incomplete" | string;
-  risk: "low" | "medium" | "high" | "unknown" | string;
-  domain: "development" | "office" | "other" | string;
+  status: DeliveryEvidenceStatus;
+  risk: DeliveryEvidenceRisk;
+  domain: DeliveryEvidenceDomain;
   review: {
     status: "queued" | "running" | "completed" | "failed" | "unavailable" | string;
     source: string;
@@ -827,7 +816,7 @@ export type LocalWorkItemDeliveryEvidence = {
     exitCode: number | null;
     summary: string | null;
   };
-  blockingReasonCodes: string[];
+  blockingReasonCodes: WorkItemReviewBlockedReasonCode[];
   actionPreview: {
     mode: "local_merge" | "pull_request" | null;
     operation: "apply_local_changes" | "create_pull_request" | "update_pull_request" | "apply_office_result";
@@ -848,6 +837,7 @@ export type LocalWorkItemDeliveryEvidence = {
       writeMode: string | null;
       reversible: boolean | null;
       batch?: {
+        schemaVersion?: 1;
         state: string;
         targetCount: number;
         operationCount: number;
@@ -856,11 +846,19 @@ export type LocalWorkItemDeliveryEvidence = {
         restoredCount?: number;
         pendingCount?: number;
         unknownCount?: number;
+        accountedCount?: number;
+        countConsistent?: boolean;
+        anomalyCodes?: Array<"operation_count_mismatch" | "duplicate_detail_id" | "unknown_detail_state" | "target_count_mismatch" | "rollback_count_mismatch" | "terminal_state_mismatch">;
         rollback: {
           status: "prepared" | "partial" | "rolled_back" | "not_available" | string;
+          protectedTargets?: number;
           restoredTargets: number;
           blockedTargets: number;
+          unknownTargets?: number;
+          countConsistent?: boolean;
         };
+        detailCount?: number;
+        detailsTruncated?: boolean;
         details: {
           id: string | null;
           businessKey: string | null;
@@ -874,7 +872,7 @@ export type LocalWorkItemDeliveryEvidence = {
     reviewedCommit: string | null;
     requiresConfirmation: true;
     canProceed: boolean;
-    blockedReasonCodes: string[];
+    blockedReasonCodes: WorkItemReviewBlockedReasonCode[];
   };
 };
 export type LocalWorkItemAutoRun = {
@@ -1185,7 +1183,7 @@ export type WorkItemReviewAction = {
   enabled: boolean;
   requiresConfirmation: boolean;
   nextOwner: "ai" | "me" | "system" | "none";
-  blockedReasonCodes: string[];
+  blockedReasonCodes: WorkItemReviewBlockedReasonCode[];
 };
 
 export type WorkItemExecutionReview = {
@@ -1233,8 +1231,9 @@ export type WorkItemExecutionReview = {
     status: "none" | "prepared" | "proposed" | "applied" | "partial" | "rolled_back" | "unknown";
     reasonCode: string;
   };
+  reviewIntent?: WorkItemReviewIntent;
   riskReasons: Array<{
-    code: "execution_failed" | "user_input_required" | "approval_required" | "verification_failed" | "verification_not_configured" | "verification_unavailable" | "external_impact_unknown" | "office_batch_partial" | "office_batch_rolled_back" | "pull_request_not_applied";
+    code: "execution_failed" | "user_input_required" | "approval_required" | "verification_failed" | "verification_not_configured" | "verification_unavailable" | "external_impact_unknown" | "office_batch_partial" | "office_batch_rolled_back" | "office_batch_evidence_inconsistent" | "pull_request_not_applied";
     severity: "medium" | "high";
     scope: "execution" | "approval" | "verification" | "external_impact";
   }>;

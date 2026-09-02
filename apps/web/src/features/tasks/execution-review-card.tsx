@@ -63,6 +63,7 @@ const RISK_REASON_COPY: Record<WorkItemExecutionReview["riskReasons"][number]["c
   external_impact_unknown: ["系统无法确认是否影响了外部数据。", "The system cannot confirm whether external data was affected."],
   office_batch_partial: ["办公批次只有部分内容成功。", "Only part of the office batch succeeded."],
   office_batch_rolled_back: ["办公批次已回滚，需要核对恢复结果。", "The office batch was rolled back and its recovery needs review."],
+  office_batch_evidence_inconsistent: ["办公批次的操作计数或恢复记录不一致，不能判断完整影响。", "The office batch operation counts or recovery records are inconsistent, so its full impact cannot be confirmed."],
   pull_request_not_applied: ["Pull Request 尚未合并生效。", "The pull request has not been merged or applied."],
 };
 
@@ -219,6 +220,19 @@ export function ExecutionReviewCard({
               );
             })}
           </div>
+          {review.reviewIntent?.source === "frozen_execution_contract" ? (
+            <div className="mt-3 rounded-lg border border-primary/20 bg-background/70 px-3 py-2.5" data-testid="execution-review-intent">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="size-4 text-primary" aria-hidden />
+                <p className="text-xs font-medium">{language === "zh" ? "本次冻结的审核依据" : "Frozen review basis for this run"}</p>
+              </div>
+              <dl className="mt-2 grid gap-1 text-xs">
+                <div><dt className="inline text-muted-foreground">{language === "zh" ? "目标：" : "Goal: "}</dt><dd className="inline">{review.reviewIntent.goal ?? (language === "zh" ? "未记录" : "Unavailable")}</dd></div>
+                <div><dt className="inline text-muted-foreground">{language === "zh" ? "预期结果：" : "Expected result: "}</dt><dd className="inline">{review.reviewIntent.expectedOutput ?? (language === "zh" ? "未记录" : "Unavailable")}</dd></div>
+                <div><dt className="inline text-muted-foreground">{language === "zh" ? "操作边界：" : "Action boundary: "}</dt><dd className="inline">{review.reviewIntent.action?.accessMode === "read_only" ? (language === "zh" ? "只读" : "Read-only") : (language === "zh" ? "仅限冻结范围" : "Frozen scope only")}</dd></div>
+              </dl>
+            </div>
+          ) : null}
           <div className="mt-3 flex flex-col gap-2 rounded-lg border border-primary/20 bg-background/70 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between" data-testid="execution-next-action">
             <span className="text-xs font-medium">{NEXT_OWNER_COPY[actionReceipt?.nextOwner ?? review.recommendedAction.nextOwner][index]}</span>
             <div className="flex flex-wrap gap-2">

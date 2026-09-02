@@ -20,3 +20,7 @@ export * from "./identity.js";
 export * from "./work-profile.js";
 export * from "./task-resources.js";
 export * from "./review-verdict.js";
+export * from "./delivery-evidence.js";
+export * from "./work-item-intent-contract.js";
+export * from "./work-item-intent-evaluation.js";
+export * from "./work-item-review-intent.js";

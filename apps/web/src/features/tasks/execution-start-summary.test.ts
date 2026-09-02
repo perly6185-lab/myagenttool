@@ -3,6 +3,35 @@ import type { ProjectSnapshot } from "@/lib/console-state";
 import type { LocalWorkItem } from "./task-view-types";
 import { deriveExecutionStartSummary } from "./execution-start-summary";
 
+function intentContract(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 2,
+    snapshotKind: "current",
+    workItemId: "wi_1",
+    goal: "按已确认范围分析客户资料",
+    taskKind: "business_research",
+    action: { accessMode: "read_only", operation: "query_data", forbiddenActions: ["modify"] },
+    expectedOutput: "客户分析.md",
+    method: { kind: "custom", definitionId: null, familyId: null, version: null, name: "已确认分析方案" },
+    materials: {
+      inputCount: 1,
+      inputs: [{ id: "content_frozen", title: "已确认客户资料", purpose: "required_input", locality: "local", version: 3, fingerprint: "sha256:frozen" }],
+      changeTargets: [],
+    },
+    delivery: { destination: "task", platformId: null, platformLabel: null },
+    sources: { goal: "current_user", action: "current_user", expectedOutput: "task_definition", method: "safe_default", materials: "confirmed_task_context", delivery: "safe_default" },
+    acceptanceCriteria: ["结论引用已确认资料"],
+    verificationSop: ["核对引用来源"],
+    conflicts: [],
+    missing: [],
+    resolutions: [],
+    clarification: null,
+    status: "ready",
+    digest: "a".repeat(64),
+    ...overrides,
+  };
+}
+
 describe("execution start summary", () => {
   it("explains the task, reusable method, materials, repository, and checks separately", () => {
     const item = {
@@ -131,8 +160,60 @@ describe("execution start summary", () => {
       severity: "blocking",
     }));
     expect(summary.clarification).toEqual({
+      code: "read_only_with_change_targets",
       question: "这次只读取并分析，还是允许修改这些资料？",
+      reason: null,
+      recommendation: null,
+      options: [],
+      targetFields: [],
       resolution: "task_context",
+    });
+  });
+
+  it("localizes structured clarification choices with recommendation, impact, and controlled targets", () => {
+    const item = {
+      title: "修改客户台账",
+      intentContract: intentContract({
+        status: "needs_clarification",
+        clarification: {
+          code: "write_request_exceeds_confirmed_boundary",
+          question: "这次继续只读处理，还是明确扩大为允许产生变更？",
+          questionCopy: { zh: "这次继续只读处理，还是明确扩大为允许产生变更？", en: "Keep this run read-only or allow changes?" },
+          reason: { zh: "任务要求产生变更，但确认边界是只读。", en: "The task asks for changes, but its confirmed boundary is read-only." },
+          recommendation: { zh: "不需要实际改动时保持只读。", en: "Keep it read-only unless actual changes are needed." },
+          options: [{
+            id: "keep_read_only",
+            label: { zh: "保持只读", en: "Keep read-only" },
+            description: { zh: "只给出建议。", en: "Provide recommendations only." },
+            impact: { zh: "不扩大权限。", en: "Does not expand permission." },
+            recommended: true,
+            applyMode: "automatic",
+            targetFields: ["action.accessMode", "action.operation"],
+          }],
+          targetFields: ["action.accessMode", "action.operation"],
+          resolution: "task_definition",
+        },
+      }),
+    } as unknown as LocalWorkItem;
+
+    const summary = deriveExecutionStartSummary({ item, project: null, readiness: { ready: true, checks: [] }, language: "en" });
+
+    expect(summary.clarification).toEqual({
+      code: "write_request_exceeds_confirmed_boundary",
+      question: "Keep this run read-only or allow changes?",
+      reason: "The task asks for changes, but its confirmed boundary is read-only.",
+      recommendation: "Keep it read-only unless actual changes are needed.",
+      options: [{
+        id: "keep_read_only",
+        label: "Keep read-only",
+        description: "Provide recommendations only.",
+        impact: "Does not expand permission.",
+        recommended: true,
+        applyMode: "automatic",
+        targetFields: ["action.accessMode", "action.operation"],
+      }],
+      targetFields: ["action.accessMode", "action.operation"],
+      resolution: "task_definition",
     });
   });
 
@@ -157,5 +238,47 @@ describe("execution start summary", () => {
       severity: "warning",
     }));
     expect(summary.clarification).toBeNull();
+  });
+
+  it("uses a v2 intent contract instead of conflicting mutable task fields", () => {
+    const item = {
+      title: "后来改过的标题",
+      intentStatement: "后来改过的目标",
+      acceptanceCriteria: ["后来改过的标准"],
+      verificationSop: ["后来改过的检查"],
+      localContentRefs: [{ id: "content_current", title: "当前但未确认的资料" }],
+      intentContract: intentContract(),
+    } as unknown as LocalWorkItem;
+
+    const summary = deriveExecutionStartSummary({ item, project: null, readiness: { ready: true, checks: [] }, language: "zh" });
+
+    expect(summary.goal).toBe("按已确认范围分析客户资料");
+    expect(summary.acceptanceCriteria).toEqual(["结论引用已确认资料"]);
+    expect(summary.verificationSteps).toEqual(["核对引用来源"]);
+    expect(summary.materials).toEqual([
+      { id: "content_frozen", title: "已确认客户资料", source: "本地资料", role: "必须使用" },
+    ]);
+    expect(summary.method).toEqual({ name: "已确认分析方案", expectedOutput: "客户分析.md", kind: "custom" });
+  });
+
+  it("labels an execution snapshot as frozen and fails closed for an unknown contract version", () => {
+    const frozen = deriveExecutionStartSummary({
+      item: { title: "分析资料", intentContract: intentContract({ snapshotKind: "execution_snapshot" }) } as unknown as LocalWorkItem,
+      project: null,
+      readiness: { ready: true, checks: [] },
+      language: "en",
+    });
+    const future = deriveExecutionStartSummary({
+      item: { title: "Future task", acceptanceCriteria: ["Done"], verificationSop: ["Check"], intentContract: { schemaVersion: 99, status: "ready" } } as unknown as LocalWorkItem,
+      project: null,
+      readiness: { ready: true, checks: [] },
+      language: "en",
+    });
+
+    expect(frozen.boundary).toContain("frozen for this run");
+    expect(future.issues).toContainEqual(expect.objectContaining({
+      code: "intent:contract_not_understood",
+      severity: "blocking",
+    }));
   });
 });

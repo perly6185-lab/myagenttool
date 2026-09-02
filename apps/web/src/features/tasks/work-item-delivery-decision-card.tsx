@@ -134,26 +134,48 @@ function OfficeBatchResult({ id, batch, copy, language }: {
   };
   const state = stateLabel[batch.state]?.[language === "zh" ? 0 : 1] ?? batch.state;
   const rollback = rollbackLabel[batch.rollback.status]?.[language === "zh" ? 0 : 1] ?? batch.rollback.status;
+  const operationSum = batch.successCount + (batch.restoredCount ?? 0) + batch.failedCount + (batch.pendingCount ?? 0) + (batch.unknownCount ?? 0);
+  const countConsistent = batch.countConsistent ?? (operationSum === batch.operationCount && (batch.unknownCount ?? 0) === 0);
+  const accountedCount = batch.accountedCount ?? Math.max(0, batch.operationCount - (batch.unknownCount ?? 0));
+  const anomalyCopy: Record<string, [string, string]> = {
+    operation_count_mismatch: ["操作总数与回执数量不一致", "Operation total does not match the receipts"],
+    duplicate_detail_id: ["批次包含重复操作回执", "The batch contains duplicate operation receipts"],
+    unknown_detail_state: ["批次包含无法识别的操作状态", "The batch contains an unrecognized operation state"],
+    target_count_mismatch: ["文件目标数与操作范围不一致", "File target count conflicts with the operation scope"],
+    rollback_count_mismatch: ["恢复目标数与恢复回执不一致", "Recovery target count does not match the recovery receipts"],
+    terminal_state_mismatch: ["批次终态与操作结果不一致", "The terminal batch state conflicts with operation outcomes"],
+  };
   return (
     <div id={id} className="mt-3 scroll-mt-4 rounded-md border border-border/80 bg-background/60 px-3 py-2.5" data-testid="office-batch-result">
-      <div className="flex flex-wrap items-center gap-2"><p className="text-xs font-medium text-muted-foreground">{copy.officeBatchResult}</p><Badge tone={batch.failedCount > 0 || batch.rollback.status === "partial" ? "warning" : batch.state === "committed" ? "success" : "neutral"}>{state}</Badge></div>
+      <div className="flex flex-wrap items-center gap-2"><p className="text-xs font-medium text-muted-foreground">{copy.officeBatchResult}</p><Badge tone={!countConsistent || batch.failedCount > 0 || batch.rollback.status === "partial" ? "warning" : batch.state === "committed" ? "success" : "neutral"}>{state}</Badge></div>
       <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
-        <div><dt className="inline text-muted-foreground">{copy.batchSuccess}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{batch.successCount}</dd></div>
-        {(batch.restoredCount ?? batch.rollback.restoredTargets) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "已恢复：" : "Restored: "}</dt><dd className="inline">{batch.restoredCount ?? batch.rollback.restoredTargets}</dd></div> : null}
-        <div><dt className="inline text-muted-foreground">{copy.batchFailed}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{batch.failedCount}</dd></div>
-        {(batch.pendingCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "待处理：" : "Pending: "}</dt><dd className="inline">{batch.pendingCount}</dd></div> : null}
-        {(batch.unknownCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "状态未知：" : "Unknown: "}</dt><dd className="inline">{batch.unknownCount}</dd></div> : null}
+        <div><dt className="inline text-muted-foreground">{language === "zh" ? "操作回执：" : "Operation receipts: "}</dt><dd className="inline">{accountedCount}/{batch.operationCount}</dd></div>
+        <div><dt className="inline text-muted-foreground">{language === "zh" ? "文件目标：" : "File targets: "}</dt><dd className="inline">{batch.targetCount}</dd></div>
+        <div><dt className="inline text-muted-foreground">{language === "zh" ? "已应用操作：" : "Applied operations: "}</dt><dd className="inline">{batch.successCount}</dd></div>
+        {(batch.restoredCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "已恢复操作：" : "Restored operations: "}</dt><dd className="inline">{batch.restoredCount}</dd></div> : null}
+        <div><dt className="inline text-muted-foreground">{language === "zh" ? "失败操作：" : "Failed operations: "}</dt><dd className="inline">{batch.failedCount}</dd></div>
+        {(batch.pendingCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "待处理操作：" : "Pending operations: "}</dt><dd className="inline">{batch.pendingCount}</dd></div> : null}
+        {(batch.unknownCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "未知操作：" : "Unknown operations: "}</dt><dd className="inline">{batch.unknownCount}</dd></div> : null}
         <div><dt className="inline text-muted-foreground">{copy.batchRollback}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{rollback}</dd></div>
       </dl>
-      {batch.rollback.restoredTargets || batch.rollback.blockedTargets ? <p className="mt-1 text-xs text-muted-foreground">{language === "zh" ? `已恢复 ${batch.rollback.restoredTargets} 项，受阻 ${batch.rollback.blockedTargets} 项` : `${batch.rollback.restoredTargets} restored, ${batch.rollback.blockedTargets} blocked`}</p> : null}
+      {batch.rollback.restoredTargets || batch.rollback.blockedTargets || (batch.rollback.unknownTargets ?? 0) ? <p className="mt-1 text-xs text-muted-foreground">{language === "zh" ? `文件恢复：已恢复 ${batch.rollback.restoredTargets} 个，受阻 ${batch.rollback.blockedTargets} 个，未知 ${batch.rollback.unknownTargets ?? 0} 个${batch.rollback.protectedTargets != null ? `（共保护 ${batch.rollback.protectedTargets} 个）` : ""}` : `File recovery: ${batch.rollback.restoredTargets} restored, ${batch.rollback.blockedTargets} blocked, ${batch.rollback.unknownTargets ?? 0} unknown${batch.rollback.protectedTargets != null ? ` of ${batch.rollback.protectedTargets} protected` : ""}`}</p> : null}
+      {!countConsistent ? (
+        <div className="mt-2 rounded border border-warning/35 bg-warning/[0.06] px-2.5 py-2 text-xs" role="status" data-testid="office-batch-inconsistent">
+          <p className="font-medium">{language === "zh" ? "批次证据不完整，当前不能应用" : "Batch evidence is inconsistent; applying is blocked"}</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">
+            {(batch.anomalyCodes?.length ? batch.anomalyCodes : ["operation_count_mismatch"]).map((code) => <li key={code}>{anomalyCopy[code]?.[language === "zh" ? 0 : 1] ?? code}</li>)}
+          </ul>
+        </div>
+      ) : null}
       <details className="mt-2">
-        <summary className="cursor-pointer text-xs font-medium">{language === "zh" ? `${copy.batchDetails}（${batch.operationCount}）` : `${copy.batchDetails} (${batch.operationCount})`}</summary>
+        <summary className="cursor-pointer text-xs font-medium">{language === "zh" ? `${copy.batchDetails}（${batch.detailCount ?? batch.operationCount}）` : `${copy.batchDetails} (${batch.detailCount ?? batch.operationCount})`}</summary>
         {batch.details.length ? <ul className="mt-2 space-y-1.5">{batch.details.slice(0, 8).map((detail, index) => (
           <li key={detail.id ?? `${detail.businessKey ?? "item"}-${index}`} className="rounded bg-muted/40 px-2.5 py-2 text-xs">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{detail.businessKey ?? (language === "zh" ? `第 ${detail.rowNumber ?? "?"} 行` : `Row ${detail.rowNumber ?? "?"}`)}</span><Badge tone={detail.state === "committed" ? "success" : ["invalidated", "expired"].includes(detail.state) ? "danger" : "neutral"}>{stateLabel[detail.state]?.[language === "zh" ? 0 : 1] ?? detail.state}</Badge></div>
             {detail.changedFields.length ? <p className="mt-1 text-muted-foreground">{language === "zh" ? "字段：" : "Fields: "}{detail.changedFields.join("、")}</p> : null}
           </li>
         ))}</ul> : <p className="mt-2 text-xs text-muted-foreground">{copy.batchNoDetails}</p>}
+        {batch.detailsTruncated ? <p className="mt-2 text-xs text-muted-foreground">{language === "zh" ? "这里只显示前 20 条操作，完整计数仍以批次汇总为准。" : "Only the first 20 operations are shown; the batch summary retains the full counts."}</p> : null}
       </details>
     </div>
   );

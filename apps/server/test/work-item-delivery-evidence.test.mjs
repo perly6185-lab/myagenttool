@@ -125,7 +125,7 @@ test("projects office batch counts, rollback state, and bounded item details", (
         state: "partial",
         journal: {
           appliedCount: 2,
-          snapshotCount: 3,
+          snapshotCount: 2,
           rollback: { restoredTargets: 1, blockedTargets: 1 },
         },
         children: [
@@ -147,7 +147,15 @@ test("projects office batch counts, rollback state, and bounded item details", (
   assert.equal(evidence.status, "office_batch_attention");
   assert.equal(evidence.risk, "high");
   assert.equal(evidence.actionPreview.canProceed, false);
-  assert.deepEqual(evidence.actionPreview.officeDetails.batch.rollback, { status: "partial", restoredTargets: 1, blockedTargets: 1 });
+  assert.deepEqual(evidence.actionPreview.officeDetails.batch.rollback, {
+    status: "partial",
+    protectedTargets: 2,
+    restoredTargets: 1,
+    blockedTargets: 1,
+    unknownTargets: 0,
+    countConsistent: true,
+  });
+  assert.equal(evidence.actionPreview.officeDetails.batch.countConsistent, true);
   assert.equal(evidence.actionPreview.officeDetails.batch.details[0].businessKey, "CUS-001");
   assert.deepEqual(evidence.actionPreview.officeDetails.batch.details[0].changedFields, ["status"]);
 });
@@ -308,6 +316,38 @@ test("treats a not-yet-expanded office batch as pending rather than missing evid
   assert.equal(evidence.actionPreview.officeDetails.batch.unknownCount, 0);
   assert.equal(evidence.status, "office_batch_in_progress");
   assert.equal(evidence.risk, "medium");
+});
+
+test("fails closed when a terminal office batch omits operation receipts", () => {
+  const evidence = buildDeliveryEvidence({
+    item: {
+      taskKind: "business_spreadsheet",
+      title: "更新客户台账",
+      ledgerMutationPreview: {
+        kind: "batch",
+        state: "committed",
+        targetCount: 2,
+        operationCount: 3,
+        children: [
+          { id: "op_1", state: "committed", changedCells: [] },
+          { id: "op_2", state: "committed", changedCells: [] },
+        ],
+      },
+    },
+    deliveryReport: { changedFiles: ["客户台账.xlsx"], verification: { passed: true, verified: true, summary: "文件已验证" } },
+    deliveryReview: { status: "completed", verdict: "approved", summary: "结果结构正确", findings: [] },
+  });
+
+  const batch = evidence.actionPreview.officeDetails.batch;
+  assert.equal(batch.operationCount, 3);
+  assert.equal(batch.accountedCount, 2);
+  assert.equal(batch.unknownCount, 1);
+  assert.equal(batch.countConsistent, false);
+  assert.ok(batch.anomalyCodes.includes("operation_count_mismatch"));
+  assert.equal(evidence.status, "office_batch_attention");
+  assert.equal(evidence.risk, "high");
+  assert.ok(evidence.blockingReasonCodes.includes("office_batch_evidence_inconsistent"));
+  assert.equal(evidence.actionPreview.canProceed, false);
 });
 
 test("uses declared office targets and models pull request transport independently from artifact type", () => {

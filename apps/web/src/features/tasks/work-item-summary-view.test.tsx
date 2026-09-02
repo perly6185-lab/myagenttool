@@ -1,5 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { projectWorkItemReviewIntent } from "@myagenttool/protocol/work-item-review-intent";
+import type { WorkItemIntentContract } from "@myagenttool/protocol/work-item-intent-contract";
+import readOnlyReviewFixture from "../../../../../packages/protocol/test/fixtures/work-item-review-intent-read-only.json";
 import { deriveWorkItemUserStatus, WorkItemSummaryView } from "./work-item-summary-view";
 import type { LocalWorkItem, WorkItemExecutionReview, WorkItemPlanActual } from "./task-view-types";
 import { i18n } from "@/lib/i18n";
@@ -1210,6 +1213,97 @@ describe("work item summary presentation", () => {
     expect(onOpenExpert).not.toHaveBeenCalled();
   });
 
+  it("shows structured intent choices and submits only the selected controlled answer", async () => {
+    const intentContract = {
+      schemaVersion: 2,
+      snapshotKind: "current",
+      workItemId: "lwi_1",
+      goal: "Update the customer ledger",
+      taskKind: "business_spreadsheet",
+      action: { accessMode: "read_only", operation: "query_data", forbiddenActions: [] },
+      expectedOutput: "Updated ledger",
+      method: { kind: "custom", definitionId: null, familyId: null, version: null, name: null },
+      materials: { inputCount: 0, inputs: [], changeTargets: [] },
+      delivery: { destination: "task", platformId: null, platformLabel: null },
+      sources: { goal: "current_user", action: "channel_contract", expectedOutput: "task_definition", method: "safe_default", materials: "confirmed_task_context", delivery: "safe_default" },
+      acceptanceCriteria: ["Customer ledger is updated"],
+      verificationSop: ["Review the changed rows"],
+      conflicts: [{
+        code: "write_request_exceeds_confirmed_boundary",
+        severity: "blocking",
+        subject: "action",
+        message: "Write request exceeds boundary",
+        question: "Keep this run read-only or allow changes?",
+        resolution: "task_definition",
+      }],
+      missing: [],
+      resolutions: [],
+      clarification: {
+        code: "write_request_exceeds_confirmed_boundary",
+        question: "Keep this run read-only or allow changes?",
+        questionCopy: { zh: "保持只读还是允许变更？", en: "Keep this run read-only or allow changes?" },
+        reason: { zh: "任务要求变更，但边界是只读。", en: "The task asks for changes, but the confirmed boundary is read-only." },
+        recommendation: { zh: "不需要改动时保持只读。", en: "Keep read-only unless actual changes are needed." },
+        options: [{
+          id: "keep_read_only",
+          label: { zh: "保持只读", en: "Keep read-only" },
+          description: { zh: "只给出建议。", en: "Provide recommendations only." },
+          impact: { zh: "不扩大权限。", en: "Does not expand permission." },
+          recommended: true,
+          applyMode: "automatic",
+          targetFields: ["action.accessMode", "action.operation"],
+        }],
+        targetFields: ["action.accessMode", "action.operation"],
+        resolution: "task_definition",
+      },
+      status: "needs_clarification",
+      digest: "a".repeat(64),
+    } as NonNullable<LocalWorkItem["intentContract"]>;
+    const conflicted = item({
+      status: "ready",
+      executionState: undefined,
+      plannedDate: null,
+      waitingOn: "none",
+      executionBindings: [],
+      intentContract,
+    });
+    const resolved = item({
+      ...conflicted,
+      revision: 3,
+      intentContract: {
+        ...intentContract,
+        action: { accessMode: "read_only", operation: "query_data", forbiddenActions: [] },
+        conflicts: [],
+        resolutions: [{ code: "write_request_exceeds_confirmed_boundary", choiceId: "keep_read_only", targetFields: ["action.accessMode", "action.operation"] }],
+        clarification: null,
+        status: "ready",
+        digest: "b".repeat(64),
+      },
+    });
+    mocks.getWorkItem.mockResolvedValue({ workItem: conflicted });
+    mocks.updateWorkItemTaskContext.mockResolvedValue({ workItem: resolved });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review and start AI" }));
+    const dialog = screen.getByRole("dialog", { name: "Confirm AI start" });
+    expect(within(dialog).getByText("The task asks for changes, but the confirmed boundary is read-only.")).toBeTruthy();
+    expect(within(dialog).getByText(/Does not expand permission/)).toBeTruthy();
+    expect(within(dialog).getByText("Will update: Action permission, Operation type")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Use this option" }));
+
+    await waitFor(() => expect(mocks.updateWorkItemTaskContext).toHaveBeenCalledWith("lwi_1", {
+      expectedRevision: 2,
+      intentResolution: {
+        idempotencyKey: expect.any(String),
+        expectedIntentDigest: "a".repeat(64),
+        conflictCode: "write_request_exceeds_confirmed_boundary",
+        choiceId: "keep_read_only",
+      },
+    }));
+    expect(mocks.updateWorkItemTaskContext.mock.calls[0][1]).not.toHaveProperty("deliveryDestination");
+    expect(mocks.updateWorkItemTaskContext.mock.calls[0][1]).not.toHaveProperty("materialRoles");
+  });
+
   it("shows a durable queued start and lets the user cancel before execution begins", async () => {
     const queued = item({
       status: "ready", executionState: "unclaimed", plannedDate: null,
@@ -1676,7 +1770,7 @@ describe("work item summary presentation", () => {
 
   it("blocks a partial office batch and exposes success, failure, rollback, and item details", async () => {
     mocks.getWorkItem.mockResolvedValue({
-      workItem: item({ status: "review", executionState: "completed", waitingOn: "me", taskKind: "business_spreadsheet", title: "Update customer ledger" }),
+      workItem: item({ status: "review", executionState: "completed", waitingOn: "me", taskKind: "software_implementation", title: "Apply the reviewed artifact" }),
       observability: {
         executionReview: reviewReadyExecutionReview([
           { kind: "view_batch_details", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
@@ -1698,12 +1792,13 @@ describe("work item summary presentation", () => {
           verification: { status: "passed", passed: true, verified: true, command: "officecli verify", commands: ["officecli verify"], exitCode: 0, summary: "Workbook validated" },
           actionPreview: {
             mode: "local_merge", operation: "apply_office_result", targetType: "office_artifact", worktreeId: "wtr_office", branchName: "office/customer-ledger", remoteUrl: null,
-            changedFileCount: 1, changedFiles: ["客户台账.xlsx"], reviewedCommit: "office-commit", requiresConfirmation: true, canProceed: false, blockedReasonCodes: ["office_batch_attention"],
+            changedFileCount: 2, changedFiles: ["客户台账.xlsx", "客户归档.xlsx"], reviewedCommit: "office-commit", requiresConfirmation: true, canProceed: false, blockedReasonCodes: ["office_batch_attention", "office_rollback_incomplete"],
             officeDetails: {
-              targetFiles: ["客户台账.xlsx"], estimatedAffectedRows: 3, fields: ["status"], operation: "update", writeMode: "batch", reversible: true,
-              batch: { state: "partial", targetCount: 3, operationCount: 3, successCount: 2, failedCount: 1, rollback: { status: "partial", restoredTargets: 1, blockedTargets: 1 }, details: [
+              targetFiles: ["客户台账.xlsx", "客户归档.xlsx"], estimatedAffectedRows: 3, fields: ["status"], operation: "update", writeMode: "batch", reversible: true,
+              batch: { schemaVersion: 1, state: "needs_attention", targetCount: 2, operationCount: 3, successCount: 1, restoredCount: 1, failedCount: 1, pendingCount: 0, unknownCount: 0, accountedCount: 3, countConsistent: true, anomalyCodes: [], detailCount: 3, detailsTruncated: false, rollback: { status: "partial", protectedTargets: 2, restoredTargets: 1, blockedTargets: 1, unknownTargets: 0, countConsistent: true }, details: [
                 { id: "op_1", businessKey: "CUS-001", action: "update", rowNumber: 2, state: "committed", changedFields: ["status"] },
-                { id: "op_2", businessKey: "CUS-002", action: "update", rowNumber: 3, state: "invalidated", changedFields: ["status"] },
+                { id: "op_2", businessKey: "CUS-002", action: "update", rowNumber: 3, state: "rolled_back", changedFields: ["status"] },
+                { id: "op_3", businessKey: "CUS-003", action: "update", rowNumber: 4, state: "invalidated", changedFields: ["status"] },
               ] },
             },
           },
@@ -1716,16 +1811,21 @@ describe("work item summary presentation", () => {
     const projectedActions = screen.getByTestId("execution-available-actions");
     fireEvent.click(within(projectedActions).getByRole("button", { name: "View batch details" }));
     const decision = await screen.findByLabelText("Review conclusion");
+    expect(decision.textContent).toContain("Office/data work");
     expect(decision.textContent).toContain("Batch needs attention");
     const batch = screen.getByTestId("office-batch-result");
-    expect(batch.textContent).toContain("Applied: 2");
-    expect(batch.textContent).toContain("Failed: 1");
+    expect(batch.textContent).toContain("Operation receipts: 3/3");
+    expect(batch.textContent).toContain("File targets: 2");
+    expect(batch.textContent).toContain("Applied operations: 1");
+    expect(batch.textContent).toContain("Restored operations: 1");
+    expect(batch.textContent).toContain("Failed operations: 1");
     expect(batch.textContent).toContain("Rollback: Partial");
-    expect(batch.textContent).toContain("1 restored, 1 blocked");
+    expect(batch.textContent).toContain("File recovery: 1 restored, 1 blocked, 0 unknown of 2 protected");
     expect(screen.getByTestId("delivery-action-preview").textContent).toContain("Failure protection: Recovery evidence recorded");
     fireEvent.click(within(batch).getByText("Batch details (3)"));
     expect(within(batch).getByText("CUS-001")).toBeTruthy();
     expect(within(batch).getByText("Committed")).toBeTruthy();
+    expect(within(batch).getByText("Rolled back")).toBeTruthy();
     expect(within(batch).getByText("Invalidated")).toBeTruthy();
     expect(screen.queryByTestId("development-actions")).toBeNull();
     const applyAction = within(projectedActions).getByTestId("execution-action-apply_office_result");
@@ -2545,6 +2645,7 @@ describe("work item summary presentation", () => {
 
   it("confirms an intent-protected result without applying, committing, or opening a pull request", async () => {
     const reviewItem = item({
+      ...readOnlyReviewFixture.mutableTask,
       status: "review",
       executionState: "completed",
       acceptanceResults: [{
@@ -2555,15 +2656,22 @@ describe("work item summary presentation", () => {
       }],
     });
     const completedItem = item({ ...reviewItem, revision: 3, status: "done", state: "closed" });
+    const reviewIntent = projectWorkItemReviewIntent({
+      intentContract: readOnlyReviewFixture.frozenIntent as unknown as WorkItemIntentContract,
+      deliveryEvidence: readOnlyReviewFixture.deliveryEvidence,
+    });
     mocks.getWorkItem.mockResolvedValue({
       workItem: reviewItem,
       observability: {
-        executionReview: reviewReadyExecutionReview([
-          { kind: "view_changes", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
-          { kind: "rerun_verification", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "system", blockedReasonCodes: [] },
-          { kind: "apply_local_changes", visible: true, enabled: false, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: ["delivery_action_forbidden_by_intent"] },
-          { kind: "review_result", visible: true, enabled: true, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: [] },
-        ]),
+        executionReview: {
+          ...reviewReadyExecutionReview([
+            { kind: "view_changes", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
+            { kind: "rerun_verification", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "system", blockedReasonCodes: [] },
+            { kind: "apply_local_changes", visible: true, enabled: false, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: ["delivery_action_forbidden_by_intent"] },
+            { kind: "review_result", visible: true, enabled: true, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: [] },
+          ]),
+          reviewIntent,
+        },
         latestRun: {
           id: "aur_uncommitted", status: "done", updatedAt: "2026-08-29T02:49:31.000Z",
           localDelivery: {
@@ -2623,12 +2731,16 @@ describe("work item summary presentation", () => {
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     const approveButton = await screen.findByRole("button", { name: "Approve result and complete without applying" });
-    expect(screen.getAllByText(/Only record your result confirmation/).length).toBeGreaterThan(0);
+    expect(within(screen.getByTestId("execution-review-intent")).getByText(/只分析 src 目录/)).toBeTruthy();
+    expect(screen.getAllByText(/Only approve the result and complete the task/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Apply this 1-file delivery to the local base branch/)).toBeNull();
-    expect(screen.getAllByText(/base branch and external systems are unchanged/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/base branch and external systems remain unchanged/).length).toBeGreaterThan(0);
     fireEvent.click(approveButton);
     const dialog = screen.getByRole("dialog", { name: "Approve the result and complete the task?" });
-    expect(within(dialog).getByText(/remains in the uncommitted worktree/)).toBeTruthy();
+    expect(within(dialog).getByText(/Changes remain in the uncommitted worktree/)).toBeTruthy();
+    const confirmationBasis = within(dialog).getByTestId("accept-review-intent");
+    expect(within(confirmationBasis).getByText(/只分析 src 目录/)).toBeTruthy();
+    expect(within(confirmationBasis).getByText(/no base-branch write, commit, pull request, or push occurs/i)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Complete without applying" }));
 
     await waitFor(() => expect(mocks.transitionWorkItem).toHaveBeenCalledWith("lwi_1", "close", 2));
